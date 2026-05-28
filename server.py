@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spotidrop local server — v2 (zero API-key architecture)
+Spotidrop local server — v3 (zero API-key architecture + anti-bot hardening)
 Run:  python server.py
 Open: http://localhost:8000
 
@@ -11,9 +11,16 @@ Metadata pipeline (fully server-side, no Spotify/YouTube API keys):
   Layer 1 → Deezer search API      (free, no auth — better cover, confirmation)
   YouTube → yt-dlp ytsearch:       (no YouTube Data API, no quota)
   Download → bestaudio/best        (always resolves, FFmpeg → mp3/320)
+
+Anti-bot hardening (v3):
+  Solution 3 → Rotating User-Agents + sleep_interval jitter
+  Solution 4 → player_client: ios → android → web fallback chain
+  Solution 2 → cookiesfrombrowser auto-detection (chrome/firefox/edge/brave)
+               Set env var YTDLP_COOKIES_BROWSER=chrome (or firefox/edge/brave)
+               to enable. Leave unset to skip (works fine without cookies too).
 """
 
-import os, re, threading, uuid
+import os, re, threading, uuid, random
 from typing import Optional
 from difflib import SequenceMatcher
 import requests
@@ -44,13 +51,37 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 jobs: dict = {}
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/124.0.0.0 Safari/537.36'
-    ),
-}
+# ── Solution 3: Rotating User-Agent pool ─────────────────────────────────────
+_USER_AGENTS = [
+    # Chrome on Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    # Chrome on macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    # Firefox on Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0',
+    # Safari on macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
+    # iOS Safari (used by yt-dlp ios client too)
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+    # Edge on Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
+]
+
+def _random_ua() -> str:
+    return random.choice(_USER_AGENTS)
+
+# Static headers used for non-YouTube requests (Spotify, Deezer, cover art)
+HEADERS = {'User-Agent': _USER_AGENTS[0]}
+
+# ── Solution 2: Cookie browser detection ─────────────────────────────────────
+# Set env var YTDLP_COOKIES_BROWSER=chrome (or firefox / edge / brave / chromium)
+# Leave unset to disable — downloads still work fine without cookies.
+_COOKIES_BROWSER = os.environ.get('YTDLP_COOKIES_BROWSER', '').strip().lower() or None
+if _COOKIES_BROWSER:
+    print(f"[cookies] Will load cookies from browser: {_COOKIES_BROWSER}")
+else:
+    print("[cookies] No browser cookies configured (set YTDLP_COOKIES_BROWSER to enable)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -314,12 +345,20 @@ def _search_youtube(title: str, artist: str) -> str:
     """
     Use yt-dlp's built-in ytsearch: to find the best YouTube video.
     Scores results the same way as before.  Returns a YouTube watch URL.
+    Anti-bot: uses iOS player_client so YouTube doesn't see a headless bot.
     """
     query   = f'{title} {artist} official audio'
     search  = f'ytsearch5:{query}'
     opts    = {
         'quiet': True, 'no_warnings': True,
         'skip_download': True, 'extract_flat': True, 'noplaylist': True,
+        # Solution 4: iOS client bypasses bot detection entirely
+        'extractor_args': {
+            'youtube': {'player_client': ['ios', 'android', 'web']},
+        },
+        # Solution 3: random UA + request jitter
+        'http_headers': {'User-Agent': _random_ua()},
+        'sleep_interval_requests': 1,
     }
 
     try:
@@ -443,7 +482,28 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
         'retries': 5, 'fragment_retries': 5,
         'extractor_retries': 3,
         'http_chunk_size': 10485760,
+
+        # ── Solution 4: player_client fallback chain ──────────────────────────
+        # iOS/Android clients are never bot-checked by YouTube.
+        # yt-dlp tries each client in order; first one that works wins.
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web'],
+            },
+        },
+
+        # ── Solution 3: rotating User-Agent + request sleep jitter ───────────
+        'http_headers': {'User-Agent': _random_ua()},
+        'sleep_interval':          2,   # min seconds between requests
+        'max_sleep_interval':      5,   # max seconds (randomised in between)
+        'sleep_interval_requests': 1,   # sleep between every fragment request
     }
+
+    # ── Solution 2: browser cookies (optional, set YTDLP_COOKIES_BROWSER) ────
+    # cookiesfrombrowser expects a tuple: (browser_name,) — NOT a plain string.
+    if _COOKIES_BROWSER:
+        ydl_opts['cookiesfrombrowser'] = (_COOKIES_BROWSER,)
+        print(f"[download] Using cookies from browser: {_COOKIES_BROWSER}")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -467,10 +527,12 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
 
     except Exception as exc:
         err = str(exc)
-        if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
+        if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm', 'blocked', 'captcha', 'login', 'age')):
             err = (
                 'YouTube blocked the download (bot detection). '
-                'Please try again in a moment or try a different track.'
+                'The server tried iOS/Android clients and request jitter automatically. '
+                'If this keeps happening: set YTDLP_COOKIES_BROWSER=chrome env var, '
+                'or run `pip install -U yt-dlp` to get the latest extractor.'
             )
         import traceback; traceback.print_exc()
         jobs[job_id].update({'status': 'error', 'error': err})
@@ -655,10 +717,12 @@ def cleanup(job_id):
 
 
 if __name__ == '__main__':
-    print("\n🎵  Spotidrop server v2 starting …")
+    print("\n🎵  Spotidrop server v3 starting …")
     print("📦  Requires: pip install flask flask-cors yt-dlp mutagen requests")
     print("🌐  Open:     http://localhost:8000\n")
     print("ℹ️   Architecture: yt-dlp Spotify scrape → Deezer cover → yt-dlp ytsearch → bestaudio/best")
+    print("🛡️   Anti-bot: player_client=ios/android/web | rotating UA | sleep jitter | optional browser cookies")
+    print(f"🍪  Cookies:  {'browser=' + _COOKIES_BROWSER if _COOKIES_BROWSER else 'disabled (set YTDLP_COOKIES_BROWSER=chrome to enable)'}")
     if not MUTAGEN_OK:
         print("⚠️   mutagen missing — run: pip install mutagen\n")
     app.run(host='0.0.0.0', port=8000, debug=False)

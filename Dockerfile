@@ -9,5 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# ── Anti-bot: optional browser cookie source (Solution 2) ─────────────────
+# Set at runtime: docker run -e YTDLP_COOKIES_BROWSER=chrome ...
+# Supported values: chrome, firefox, edge, brave, chromium
+# Leave unset (default) to skip — iOS/Android player_client handles most cases.
+ENV YTDLP_COOKIES_BROWSER=""
+
 EXPOSE 8000
 CMD ["python", "server.py"]
