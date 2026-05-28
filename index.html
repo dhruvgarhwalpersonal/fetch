@@ -187,6 +187,13 @@ function applyAccentColor(r, g, b) {
   root.style.setProperty('--accent-glow', `rgba(${r},${g},${b},0.20)`);
   root.style.setProperty('--accent-soft', `rgba(${r},${g},${b},0.06)`);
 
+  // Force Spotify word to update immediately (bypasses any CSS inheritance quirks)
+  const spotifyEm = document.querySelector('.hero h1 em');
+  if (spotifyEm) {
+    spotifyEm.style.color = hex;
+    spotifyEm.style.webkitTextFillColor = hex;
+  }
+
   // ── Full-page background: blurred solid fill (not aurora glows) ───────────
   const aurora = $('bg-aurora');
   if (aurora) {
@@ -223,8 +230,8 @@ async function checkServer() {
         if (cr.ok) {
           const cd = await cr.json();
           $('sstatus').textContent = cd.ok
-            ? `online · cookies: ${cd.browser || 'file'}`
-            : 'online · ⚙️ no cookies';
+            ? 'online · cookies: on'
+            : 'online · cookies: off';
           if (!cd.ok) $('sdot').className = 'server-dot';
         } else {
           $('sstatus').textContent = 'server online';

@@ -540,8 +540,8 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
     hook = lambda d: _progress_hook(job_id, d)
 
     ydl_opts = {
-        # bestaudio/best: yt-dlp resolves this at runtime — always works
         'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best',
+        'format_sort': ['abr', 'asr', 'ext'],
         'outtmpl': out_template,
         'quiet': True, 'no_warnings': True,
         'postprocessors': [{
@@ -555,6 +555,7 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
         'retries': 5, 'fragment_retries': 5,
         'extractor_retries': 3,
         'http_chunk_size': 10485760,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
     }
     ydl_opts.update(_best_cookie_source())
 
@@ -587,6 +588,8 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
                 'Fix: place a cookies.txt next to server.py. '
                 'Export it from your browser with the "Get cookies.txt LOCALLY" extension.'
             )
+        elif 'format is not available' in err.lower() or 'requested format' in err.lower():
+            err = 'Could not find a downloadable audio format for this video. Try a different track.'
         import traceback; traceback.print_exc()
         jobs[job_id].update({'status': 'error', 'error': err})
 
@@ -761,6 +764,7 @@ def stream_download():
     try:
         ydl_opts = {
             'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best',
+            'format_sort': ['abr', 'asr', 'ext'],
             'outtmpl': os.path.join(tmp_dir, 'audio.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
@@ -770,7 +774,7 @@ def stream_download():
                 'preferredquality': '192',
             }],
             'noplaylist': True,
-            # Use Android client — bypasses bot detection without cookies
+            # Android client bypasses bot detection; web as fallback only
             'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
         }
         ydl_opts.update(_best_cookie_source())
@@ -820,6 +824,8 @@ def stream_download():
         if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
             err = ('YouTube blocked the download (bot detection). '
                    'Add a cookies.txt to your repo to fix this.')
+        elif 'format is not available' in err.lower() or 'requested format' in err.lower():
+            err = 'Could not find a downloadable audio format for this video. Try a different track.'
         return jsonify({'error': err}), 500
 
 
