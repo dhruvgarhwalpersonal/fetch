@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fetch — Download any Spotify track</title>
+<title>Spotidrop — Download any Spotify track</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -21,7 +21,7 @@
     <div class="logo-mark">
       <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
     </div>
-    <span class="logo-text">Fetch</span>
+    <span class="logo-text">Spoti<span>drop</span></span>
     <span class="badge"><span class="server-dot" id="sdot"></span><span id="sstatus">checking…</span></span>
   </header>
 
@@ -86,12 +86,12 @@
 </div><!-- .glass-shell -->
 
 <script>
-const SERVER = '';
+const SERVER = 'http://localhost:8000';
 const $      = id => document.getElementById(id);
 const wait   = ms => new Promise(r => setTimeout(r, ms));
 
 let dlHistory = [];
-try { dlHistory = JSON.parse(localStorage.getItem('fetch_h') || '[]'); } catch(e) {}
+try { dlHistory = JSON.parse(localStorage.getItem('spotidrop_h') || '[]'); } catch(e) {}
 
 // ── Dynamic accent color from album art ──────────────────────────────────────
 function extractColor(imgEl, callback) {
@@ -187,13 +187,6 @@ function applyAccentColor(r, g, b) {
   root.style.setProperty('--accent-glow', `rgba(${r},${g},${b},0.20)`);
   root.style.setProperty('--accent-soft', `rgba(${r},${g},${b},0.06)`);
 
-  // Force Spotify word to update immediately (bypasses any CSS inheritance quirks)
-  const spotifyEm = document.querySelector('.hero h1 em');
-  if (spotifyEm) {
-    spotifyEm.style.color = hex;
-    spotifyEm.style.webkitTextFillColor = hex;
-  }
-
   // ── Full-page background: blurred solid fill (not aurora glows) ───────────
   const aurora = $('bg-aurora');
   if (aurora) {
@@ -230,8 +223,8 @@ async function checkServer() {
         if (cr.ok) {
           const cd = await cr.json();
           $('sstatus').textContent = cd.ok
-            ? 'online · cookies: on'
-            : 'online · cookies: off';
+            ? `online · cookies: ${cd.browser || 'file'}`
+            : 'online · ⚙️ no cookies';
           if (!cd.ok) $('sdot').className = 'server-dot';
         } else {
           $('sstatus').textContent = 'server online';
@@ -321,33 +314,33 @@ async function findYouTube(track, artist) {
   return d.youtube_url;
 }
 
-// ── Download via streaming ────────────────────────────────────────────────────
+// ── Download + poll ───────────────────────────────────────────────────────────
 async function downloadViaServer(ytUrl, meta) {
-  setProgress(60, 'Downloading audio…');
-
-  const resp = await fetch(SERVER + '/api/stream-download', {
+  const startR = await fetch(SERVER + '/api/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       youtube_url: ytUrl,
       title:  meta.track,
       artist: meta.artist,
+      album:  meta.album,
+      cover:  meta.cover,
     }),
+    signal: AbortSignal.timeout(10000),
   });
+  if (!startR.ok) throw new Error('Server error starting download: ' + startR.status);
+  const { job_id } = await startR.json();
 
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err.error || `Download failed (${resp.status})`);
+  for (let i = 0; i < 120; i++) {
+    await wait(1000);
+    const pollR = await fetch(SERVER + '/api/progress/' + job_id, { signal: AbortSignal.timeout(5000) });
+    const job   = await pollR.json();
+    if (job.error) throw new Error(job.error);
+    const pct = job.progress || 0;
+    setProgress(60 + Math.round(pct * 0.38), `Almost there… ${pct}%`);
+    if (job.status === 'done') return SERVER + '/api/file/' + job_id;
   }
-
-  setProgress(85, 'Receiving file…');
-
-  // Read the streamed response as a blob
-  const blob = await resp.blob();
-  const url  = URL.createObjectURL(blob);
-
-  setProgress(100, '✓ Done!');
-  return url;  // returns a blob:// URL the browser can download
+  throw new Error('Download timed out — try again.');
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -455,7 +448,7 @@ async function startDownload() {
 
     const item = { track: meta.track, artist: meta.artist, cover: meta.cover, url: fileUrl };
     dlHistory = [item, ...dlHistory.filter(h => h.track !== item.track)].slice(0, 8);
-    try { localStorage.setItem('fetch_h', JSON.stringify(dlHistory)); } catch(e) {}
+    try { localStorage.setItem('spotidrop_h', JSON.stringify(dlHistory)); } catch(e) {}
     renderHistory();
 
   } catch(err) {
