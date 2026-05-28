@@ -173,6 +173,47 @@ def _has_cookies() -> bool:
     return False
 
 
+def _download_ydl_opts(out_template: str, progress_hooks: list = None, quality: str = '192') -> dict:
+    """
+    Build yt-dlp download options.
+    - With cookies: plain bestaudio/best + cookie auth (most compatible, no client override).
+    - Without cookies: tv_embedded player client bypasses bot-detection without auth.
+    """
+    cookie_opts = _best_cookie_source()
+    has_cookies = bool(cookie_opts)
+
+    opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': out_template,
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'retries': 5,
+        'fragment_retries': 5,
+        'extractor_retries': 3,
+        'http_chunk_size': 10485760,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': quality,
+        }],
+    }
+
+    if has_cookies:
+        # Cookies present: plain bestaudio/best with auth — most compatible
+        opts.update(cookie_opts)
+        print("[yt-dlp] Cookies present — using bestaudio/best with auth")
+    else:
+        # No cookies: tv_embedded client works without auth, avoids bot-detection
+        opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
+        print("[yt-dlp] No cookies — using tv_embedded player client")
+
+    if progress_hooks:
+        opts['progress_hooks'] = progress_hooks
+
+    return opts
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metadata helpers
@@ -551,23 +592,9 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
     out_template = os.path.join(DOWNLOAD_DIR, f'{job_id}.%(ext)s')
     hook = lambda d: _progress_hook(job_id, d)
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': out_template,
-        'quiet': True, 'no_warnings': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }],
-        'writethumbnail': False, 'writeinfojson': False,
-        'writedescription': False, 'addmetadata': False,
-        'progress_hooks': [hook],
-        'retries': 5, 'fragment_retries': 5,
-        'extractor_retries': 3,
-        'http_chunk_size': 10485760,
-    }
-    ydl_opts.update(_best_cookie_source())
+    ydl_opts = _download_ydl_opts(out_template, progress_hooks=[hook], quality='320')
+    ydl_opts.update({'writethumbnail': False, 'writeinfojson': False,
+                     'writedescription': False, 'addmetadata': False})
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -777,20 +804,7 @@ def stream_download():
     try:
         out_template = os.path.join(tmp_dir, 'audio.%(ext)s')
 
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': out_template,
-            'quiet': True, 'no_warnings': True,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'retries': 5, 'fragment_retries': 5,
-            'extractor_retries': 3,
-            'http_chunk_size': 10485760,
-        }
-        ydl_opts.update(_best_cookie_source())
+        ydl_opts = _download_ydl_opts(out_template, quality='192')
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([yt_url])
