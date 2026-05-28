@@ -663,10 +663,11 @@ def youtube_search():
 @app.route('/api/stream-download', methods=['POST'])
 def stream_download():
     """
-    Streams the MP3 directly to the browser — no disk storage needed.
-    Works on Render's ephemeral filesystem.
+    Downloads MP3 to /tmp (ephemeral but writable on Render),
+    then streams it to the browser and deletes it.
+    FFmpeg cannot reliably pipe MP3 to stdout, so /tmp is the fix.
     """
-    import subprocess
+    import tempfile, shutil
     from flask import Response, stream_with_context
 
     data      = request.json or {}
@@ -677,43 +678,74 @@ def stream_download():
     if not yt_url:
         return jsonify({'error': 'No YouTube URL'}), 400
 
-    filename = f"{title} - {artist}.mp3".replace('/', '-').replace('\\', '-')
+    safe_name = re.sub(r'[/\\:*?"<>|]', '-', f'{title} - {artist}')[:100].strip()
+    filename  = f"{safe_name}.mp3"
 
-    def generate():
-        cmd = [
-            'yt-dlp',
-            '--no-playlist',
-            '-f', 'bestaudio/best',
-            '--extract-audio',
-            '--audio-format', 'mp3',
-            '--audio-quality', '192K',
-            '-o', '-',          # output to stdout (pipe)
-            '--quiet',
-            yt_url,
-        ]
-        if os.path.exists(COOKIES_FILE):
-            cmd += ['--cookies', COOKIES_FILE]
+    # Use a dedicated temp directory so the .mp3 path is predictable
+    tmp_dir  = tempfile.mkdtemp(prefix='fetch_')
+    mp3_path = os.path.join(tmp_dir, 'audio.mp3')
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            while True:
-                chunk = proc.stdout.read(8192)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            proc.stdout.close()
-            proc.wait()
-
-    response = Response(
-        stream_with_context(generate()),
-        mimetype='audio/mpeg',
-        headers={
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'X-Accel-Buffering': 'no',  # disable nginx buffering on Render
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(tmp_dir, 'audio.%(ext)s'),
+            'quiet': True,
+            'no_warnings': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'noplaylist': True,
         }
-    )
-    return response
+        ydl_opts.update(_best_cookie_source())
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([yt_url])
+
+        # yt-dlp may name it audio.mp3 or audio.webm.mp3 etc — find it
+        if not os.path.exists(mp3_path):
+            for f in os.listdir(tmp_dir):
+                if f.endswith('.mp3'):
+                    mp3_path = os.path.join(tmp_dir, f)
+                    break
+
+        if not os.path.exists(mp3_path):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return jsonify({'error': 'Conversion failed — MP3 not found'}), 500
+
+        file_size = os.path.getsize(mp3_path)
+        print(f"[stream] {filename} — {file_size // 1024}KB — streaming to client")
+
+        def generate():
+            try:
+                with open(mp3_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        yield chunk
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='audio/mpeg',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Content-Length': str(file_size),
+                'X-Accel-Buffering': 'no',
+            }
+        )
+
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        err = str(exc)
+        print(f"[stream] ERROR: {err}")
+        if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
+            err = ('YouTube blocked the download (bot detection). '
+                   'Add a cookies.txt to your repo to fix this.')
+        return jsonify({'error': err}), 500
 
 
 @app.route('/api/download', methods=['POST'])
