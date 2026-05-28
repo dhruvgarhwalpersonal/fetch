@@ -66,6 +66,109 @@ HEADERS = {
     ),
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Piped API — open-source YouTube frontend used as audio download proxy.
+# Render's datacenter IPs are blocked by YouTube for audio delivery even with
+# valid cookies.  Piped instances are community-run reverse proxies that aren't
+# on YouTube's datacenter blocklist, so audio streams flow through fine.
+# yt-dlp is still used for search (ytsearch:) — only the download step changes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.adminforge.de',
+    'https://piped-api.garudalinux.org',
+    'https://api.piped.yt',
+    'https://piped.video/api',
+    'https://pipedapi.reallyaweso.me',
+]
+
+_YT_ID_RE = re.compile(r'(?:v=|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})')
+
+
+def _extract_video_id(youtube_url: str) -> str:
+    """Extract the 11-character video ID from any YouTube URL format."""
+    m = _YT_ID_RE.search(youtube_url)
+    if not m:
+        raise ValueError(f'Could not extract video ID from URL: {youtube_url}')
+    return m.group(1)
+
+
+def _get_audio_via_piped(video_id: str) -> str:
+    """
+    Query Piped API instances in order until one returns a valid audio stream URL.
+
+    Tries each instance in PIPED_INSTANCES, calls GET /streams/<video_id>,
+    parses the audioStreams array, and picks the highest-quality m4a or webm
+    stream available.
+
+    Returns the direct stream URL (a proxied CDN link — no YouTube auth needed).
+    Raises RuntimeError if every instance fails.
+    """
+    errors = []
+    for instance in PIPED_INSTANCES:
+        try:
+            url = f'{instance}/streams/{video_id}'
+            print(f"[piped] Trying {instance} …")
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+
+            streams = data.get('audioStreams', [])
+            if not streams:
+                errors.append(f'{instance}: no audioStreams in response')
+                continue
+
+            # Prefer m4a, then webm; within each codec prefer highest quality
+            def _stream_score(s):
+                mime = (s.get('mimeType') or '').lower()
+                quality = s.get('quality') or s.get('bitrate') or 0
+                # Normalise quality to an int — Piped sometimes returns "128 kbps"
+                if isinstance(quality, str):
+                    quality = int(re.sub(r'[^0-9]', '', quality) or '0')
+                codec_score = 2 if 'm4a' in mime else (1 if 'webm' in mime or 'opus' in mime else 0)
+                return (codec_score, quality)
+
+            best = max(streams, key=_stream_score)
+            stream_url = best.get('url', '')
+            if not stream_url:
+                errors.append(f'{instance}: best stream has no URL')
+                continue
+
+            mime = best.get('mimeType', '')
+            quality = best.get('quality') or best.get('bitrate') or '?'
+            print(f"[piped] ✓ {instance} — {mime} @ {quality}")
+            return stream_url
+
+        except Exception as exc:
+            errors.append(f'{instance}: {exc}')
+            print(f"[piped] ✗ {instance} failed: {exc}")
+            continue
+
+    raise RuntimeError(
+        f'All Piped instances failed for video {video_id}. '
+        f'Errors: {"; ".join(errors)}'
+    )
+
+
+def _download_audio_stream(stream_url: str, out_path: str) -> None:
+    """
+    Download a direct audio stream URL to out_path using chunked streaming.
+
+    Uses requests with stream=True so large files don't load into memory.
+    Writes 64KB chunks at a time.  Raises on any HTTP or I/O error.
+    """
+    print(f"[piped] Downloading stream → {out_path}")
+    r = requests.get(stream_url, headers=HEADERS, stream=True, timeout=300)
+    r.raise_for_status()
+    written = 0
+    with open(out_path, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=65536):
+            if chunk:
+                f.write(chunk)
+                written += len(chunk)
+    print(f"[piped] Download complete — {written // 1024}KB written")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cookie helpers for YouTube bot-detection bypass
@@ -592,50 +695,93 @@ def _progress_hook(job_id: str, d: dict):
 
 
 def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: str, cover_url: str):
+    import subprocess, tempfile, shutil
     safe = re.sub(r'[/\\:*?"<>|]', '-', f'{title} - {artist}')[:100].strip()
-    out_template = os.path.join(DOWNLOAD_DIR, f'{job_id}.%(ext)s')
-    hook = lambda d: _progress_hook(job_id, d)
+    mp3_path = os.path.join(DOWNLOAD_DIR, f'{job_id}.mp3')
 
-    ydl_opts = _download_ydl_opts(out_template, progress_hooks=[hook], quality='320')
-    ydl_opts.update({'writethumbnail': False, 'writeinfojson': False,
-                     'writedescription': False, 'addmetadata': False})
-
+    # ── Step 1: Try Piped API for audio download ──────────────────────────────
+    piped_ok = False
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([youtube_url])
+        video_id = _extract_video_id(youtube_url)
+        stream_url = _get_audio_via_piped(video_id)
 
-        mp3_path = os.path.join(DOWNLOAD_DIR, f'{job_id}.mp3')
-        if not os.path.exists(mp3_path):
-            for f in sorted(os.listdir(DOWNLOAD_DIR)):
-                if f.startswith(job_id):
-                    os.rename(os.path.join(DOWNLOAD_DIR, f), mp3_path)
-                    break
+        # Download to a temp file (m4a/webm — we don't know extension yet)
+        tmp_dir = tempfile.mkdtemp(prefix='fetch_piped_')
+        try:
+            raw_path = os.path.join(tmp_dir, 'audio.raw')
+            _download_audio_stream(stream_url, raw_path)
+            jobs[job_id]['progress'] = 70
 
-        if not os.path.exists(mp3_path):
-            jobs[job_id].update({'status': 'error', 'error': 'MP3 file not found after download'})
-            return
+            # Convert raw audio to MP3 with FFmpeg via subprocess
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-i', raw_path,
+                '-vn',
+                '-acodec', 'libmp3lame',
+                '-ab', '320k',
+                '-ar', '44100',
+                mp3_path,
+            ]
+            result = subprocess.run(
+                ffmpeg_cmd, capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f'FFmpeg conversion failed: {result.stderr[-500:]}')
 
-        jobs[job_id]['progress'] = 92
-        embed_id3_tags(mp3_path, title, artist, album, cover_url)
-        jobs[job_id].update({'status': 'done', 'progress': 100,
-                              'file_path': mp3_path, 'filename': f'{safe}.mp3'})
+            print(f"[piped] FFmpeg conversion done → {mp3_path}")
+            piped_ok = True
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     except Exception as exc:
-        err = str(exc)
-        if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
-            _cookie_cache.clear()
-            err = (
-                'YouTube blocked the download (bot detection). '
-                'Fix: place a cookies.txt next to server.py. '
-                'Export it from your browser with the "Get cookies.txt LOCALLY" extension.'
-            )
-        elif any(kw in err.lower() for kw in (
-            'format is not available', 'requested format',
-            'no video formats', 'no suitable formats'
-        )):
-            err = 'Could not find a downloadable audio format for this video. Try a different track.'
-        import traceback; traceback.print_exc()
-        jobs[job_id].update({'status': 'error', 'error': err})
+        print(f"[piped] Piped download failed, falling back to yt-dlp: {exc}")
+
+    # ── Step 2: yt-dlp fallback if Piped failed ───────────────────────────────
+    if not piped_ok:
+        out_template = os.path.join(DOWNLOAD_DIR, f'{job_id}.%(ext)s')
+        hook = lambda d: _progress_hook(job_id, d)
+
+        ydl_opts = _download_ydl_opts(out_template, progress_hooks=[hook], quality='320')
+        ydl_opts.update({'writethumbnail': False, 'writeinfojson': False,
+                         'writedescription': False, 'addmetadata': False})
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([youtube_url])
+
+            if not os.path.exists(mp3_path):
+                for f in sorted(os.listdir(DOWNLOAD_DIR)):
+                    if f.startswith(job_id):
+                        os.rename(os.path.join(DOWNLOAD_DIR, f), mp3_path)
+                        break
+
+        except Exception as exc:
+            err = str(exc)
+            if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
+                _cookie_cache.clear()
+                err = (
+                    'YouTube blocked the download (bot detection). '
+                    'Fix: place a cookies.txt next to server.py. '
+                    'Export it from your browser with the "Get cookies.txt LOCALLY" extension.'
+                )
+            elif any(kw in err.lower() for kw in (
+                'format is not available', 'requested format',
+                'no video formats', 'no suitable formats'
+            )):
+                err = 'Could not find a downloadable audio format for this video. Try a different track.'
+            import traceback; traceback.print_exc()
+            jobs[job_id].update({'status': 'error', 'error': err})
+            return
+
+    # ── Step 3: Verify MP3 exists, tag it, mark job done ─────────────────────
+    if not os.path.exists(mp3_path):
+        jobs[job_id].update({'status': 'error', 'error': 'MP3 file not found after download'})
+        return
+
+    jobs[job_id]['progress'] = 92
+    embed_id3_tags(mp3_path, title, artist, album, cover_url)
+    jobs[job_id].update({'status': 'done', 'progress': 100,
+                          'file_path': mp3_path, 'filename': f'{safe}.mp3'})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -806,26 +952,59 @@ def stream_download():
     mp3_path = os.path.join(tmp_dir, 'audio.mp3')
 
     try:
-        out_template = os.path.join(tmp_dir, 'audio.%(ext)s')
+        import subprocess
 
-        ydl_opts = _download_ydl_opts(out_template, quality='192')
+        # ── Piped-first download path ─────────────────────────────────────────
+        piped_ok = False
+        try:
+            video_id = _extract_video_id(yt_url)
+            stream_url = _get_audio_via_piped(video_id)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([yt_url])
+            raw_path = os.path.join(tmp_dir, 'audio.raw')
+            _download_audio_stream(stream_url, raw_path)
 
-        # yt-dlp may name it audio.mp3 or audio.webm.mp3 etc — find it
-        if not os.path.exists(mp3_path):
-            for f in os.listdir(tmp_dir):
-                if f.endswith('.mp3'):
-                    mp3_path = os.path.join(tmp_dir, f)
-                    break
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-i', raw_path,
+                '-vn',
+                '-acodec', 'libmp3lame',
+                '-ab', '192k',
+                '-ar', '44100',
+                mp3_path,
+            ]
+            result = subprocess.run(
+                ffmpeg_cmd, capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f'FFmpeg conversion failed: {result.stderr[-500:]}')
+
+            print(f"[piped] FFmpeg conversion done → {mp3_path}")
+            piped_ok = True
+
+        except Exception as piped_exc:
+            print(f"[piped] Piped path failed, falling back to yt-dlp: {piped_exc}")
+
+        # ── yt-dlp fallback if Piped failed ──────────────────────────────────
+        if not piped_ok:
+            out_template = os.path.join(tmp_dir, 'audio.%(ext)s')
+            ydl_opts = _download_ydl_opts(out_template, quality='192')
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([yt_url])
+
+            # yt-dlp may name it audio.mp3 or audio.webm.mp3 etc — find it
+            if not os.path.exists(mp3_path):
+                for f in os.listdir(tmp_dir):
+                    if f.endswith('.mp3'):
+                        mp3_path = os.path.join(tmp_dir, f)
+                        break
 
         if not os.path.exists(mp3_path):
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return jsonify({'error': 'Conversion failed — MP3 not found'}), 500
 
         file_size = os.path.getsize(mp3_path)
-        print(f"[stream] {filename} — {file_size // 1024}KB — streaming to client")
+        print(f"[stream] {filename} — {file_size // 1024}KB — streaming to client ({'piped' if piped_ok else 'yt-dlp'})")
 
         def generate():
             try:
@@ -919,7 +1098,7 @@ if __name__ == '__main__':
     print("\n🎵  Fetch server v2 starting …")
     print("📦  Requires: pip install flask flask-cors yt-dlp mutagen requests")
     print("🌐  Open:     http://localhost:8000\n")
-    print("ℹ️   Architecture: yt-dlp Spotify scrape → Deezer cover → yt-dlp ytsearch → bestaudio/best")
+    print("ℹ️   Architecture: yt-dlp Spotify scrape → Deezer cover → yt-dlp ytsearch → Piped API audio → FFmpeg MP3")
     if not MUTAGEN_OK:
         print("⚠️   mutagen missing — run: pip install mutagen\n")
     port = int(os.environ.get('PORT', 8000))

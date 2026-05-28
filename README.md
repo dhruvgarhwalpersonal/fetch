@@ -47,13 +47,19 @@ Fallback: Spotify oEmbed thumbnail
     ▼
 Step 3 — YOUTUBE MATCH
 yt-dlp ytsearch: finds the best matching video
-(no YouTube API key — uses yt-dlp's built-in search)
+(no YouTube API key — uses yt-dlp's built-in search only)
 Scored by title similarity + "official audio" signals
     │
     ▼
-Step 4 — DOWNLOAD & CONVERT
-yt-dlp downloads best audio format
-FFmpeg converts to MP3 at 192kbps
+Step 4 — AUDIO DOWNLOAD via Piped API
+Extract YouTube video ID from search result
+Piped API (open-source YouTube proxy) returns direct audio stream URL
+stream downloaded with requests — bypasses Render datacenter IP block
+Fallback: yt-dlp direct download if all Piped instances are down
+    │
+    ▼
+Step 5 — CONVERT & TAG
+FFmpeg converts raw audio to MP3 at 192kbps
 mutagen embeds ID3 tags (title, artist, album, cover art)
 File streams directly to your browser — nothing stored
     │
@@ -84,7 +90,8 @@ No files are kept on the server. Every download is written to a temp directory i
 | Layer | Technology |
 |---|---|
 | Backend | Python 3, Flask, flask-cors |
-| Audio download | yt-dlp |
+| Audio search | yt-dlp (ytsearch: only — no YouTube API key) |
+| Audio download | Piped API (open-source YouTube proxy, bypasses datacenter IP block) |
 | Audio conversion | FFmpeg |
 | ID3 tag embedding | mutagen |
 | Metadata enrichment | Deezer free API, Spotify embed scrape |
@@ -394,10 +401,11 @@ The highest-scoring result's URL is returned.
 `/api/stream-download` does the following:
 
 1. Creates a unique temp directory in `/tmp` (ephemeral on Render, writable unlike the app directory)
-2. Runs yt-dlp with `bestaudio/best` format and `FFmpegExtractAudio` post-processor to convert to MP3 at 192kbps
-3. yt-dlp options include `_best_cookie_source()` (env var cookies if available) and `extractor_args: youtube: player_client: [android, web]` (Android client bypass)
-4. Once the file exists in `/tmp`, streams it to the browser in 64KB chunks using Flask's `stream_with_context`
-5. Deletes the temp directory in a `finally` block whether or not streaming succeeded
+2. Extracts the YouTube video ID from the URL returned by the search step
+3. **Piped API path (primary):** Queries each Piped instance in order via `GET /streams/<video_id>`. Piped is an open-source YouTube frontend whose community-run instances are not on YouTube's datacenter blocklist — meaning audio streams actually deliver from Render's IP. The `audioStreams` array is parsed and the highest-quality m4a or webm stream is selected. The stream is downloaded in 64KB chunks via `requests`. FFmpeg is then called via `subprocess` to convert the raw audio to MP3 at 192kbps.
+4. **yt-dlp fallback (if all Piped instances fail):** Falls back to the original yt-dlp `bestaudio/best` + `FFmpegExtractAudio` postprocessor path. This preserves full functionality even during Piped outages.
+5. Once the MP3 exists in `/tmp`, streams it to the browser in 64KB chunks using Flask's `stream_with_context`
+6. Deletes the temp directory in a `finally` block whether or not streaming succeeded
 
 MP3 files are never stored permanently — `/tmp` is wiped on Render service restarts.
 
@@ -514,6 +522,14 @@ Content-Length: {bytes}
 ---
 
 ## Troubleshooting
+
+### "All Piped instances failed"
+
+This means every public Piped instance in the list was unreachable or returned an error when trying to fetch the audio stream URL. This is uncommon — the six instances in the list are geographically distributed and rarely all down at the same time.
+
+When this happens, Fetch **automatically falls back to yt-dlp** for the download. You do not need to do anything. If yt-dlp also fails with bot detection errors, refer to the section above about `YOUTUBE_COOKIES`.
+
+If you're seeing this consistently, the Piped instance list in `server.py` (the `PIPED_INSTANCES` constant near the top of the file) can be updated with currently active instances from the [Piped instances list](https://github.com/TeamPiped/Piped/wiki/Instances).
 
 ### "YouTube blocked the download (bot detection)"
 
