@@ -110,7 +110,12 @@ def _get_audio_via_piped(video_id: str) -> str:
         try:
             url = f'{instance}/streams/{video_id}'
             print(f"[piped] Trying {instance} …")
-            r = requests.get(url, headers=HEADERS, timeout=15)
+            instance_headers = {
+                **HEADERS,
+                'Referer': instance + '/',
+                'Origin':  instance,
+            }
+            r = requests.get(url, headers=instance_headers, timeout=15)
             r.raise_for_status()
             data = r.json()
 
@@ -155,18 +160,57 @@ def _download_audio_stream(stream_url: str, out_path: str) -> None:
     """
     Download a direct audio stream URL to out_path using chunked streaming.
 
+    Piped proxies serve streams via their own CDN URLs which require a matching
+    Referer and Origin header — without them the CDN returns a 403 or a tiny
+    redirect HTML page that FFmpeg cannot decode.
+
     Uses requests with stream=True so large files don't load into memory.
     Writes 64KB chunks at a time.  Raises on any HTTP or I/O error.
     """
-    print(f"[piped] Downloading stream → {out_path}")
-    r = requests.get(stream_url, headers=HEADERS, stream=True, timeout=300)
+    # Derive the instance origin from the stream URL so Referer matches
+    from urllib.parse import urlparse
+    parsed = urlparse(stream_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    download_headers = {
+        **HEADERS,
+        'Referer':        origin + '/',
+        'Origin':         origin,
+        'Accept':         '*/*',
+        'Accept-Language':'en-US,en;q=0.9',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+    }
+
+    print(f"[piped] Downloading stream → {out_path}  (origin={origin})")
+    r = requests.get(stream_url, headers=download_headers, stream=True, timeout=300,
+                     allow_redirects=True)
     r.raise_for_status()
+
+    # Sanity check: content-type must look like audio, not HTML
+    ct = r.headers.get('Content-Type', '')
+    if 'text/html' in ct or 'text/plain' in ct:
+        body_preview = r.content[:200].decode('utf-8', errors='replace')
+        raise RuntimeError(
+            f'Piped stream URL returned non-audio content ({ct}): {body_preview}'
+        )
+
     written = 0
     with open(out_path, 'wb') as f:
         for chunk in r.iter_content(chunk_size=65536):
             if chunk:
                 f.write(chunk)
                 written += len(chunk)
+
+    if written < 65536:   # anything under 64KB is almost certainly an error page
+        with open(out_path, 'rb') as f:
+            preview = f.read(200).decode('utf-8', errors='replace')
+        raise RuntimeError(
+            f'Piped stream download too small ({written} bytes) — '
+            f'likely an error page: {preview}'
+        )
+
     print(f"[piped] Download complete — {written // 1024}KB written")
 
 
