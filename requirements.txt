@@ -3,3 +3,4 @@ flask-cors==4.0.1
 yt-dlp==2026.03.17
 mutagen==1.47.0
 requests==2.32.3
+youtube-po-token-plugin
