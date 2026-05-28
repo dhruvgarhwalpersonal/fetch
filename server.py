@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spotidrop local server — v4 (zero API-key architecture + auto po_token)
+Spotidrop local server — v2 (zero API-key architecture)
 Run:  python server.py
 Open: http://localhost:8000
 
@@ -11,19 +11,9 @@ Metadata pipeline (fully server-side, no Spotify/YouTube API keys):
   Layer 1 → Deezer search API      (free, no auth — better cover, confirmation)
   YouTube → yt-dlp ytsearch:       (no YouTube Data API, no quota)
   Download → bestaudio/best        (always resolves, FFmpeg → mp3/320)
-
-Anti-bot hardening (v4):
-  Solution 3 → Rotating User-Agents + sleep_interval jitter
-  Solution 4 → player_client: tv_embedded → mweb (2025 bypass)
-  Solution 5 → po_token auto-generated on server startup, auto-refreshed
-               every 6 hours — zero manual steps, works on Render/Docker.
-  Solution 2 → cookiesfrombrowser auto-detection (chrome/firefox/edge/brave)
-               Set env var YTDLP_COOKIES_BROWSER=chrome (or firefox/edge/brave)
-               to enable. Leave unset to skip.
 """
 
-import os, re, threading, uuid, random, time, subprocess
-from typing import Optional
+import os, re, threading, uuid, time
 from difflib import SequenceMatcher
 import requests
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -43,128 +33,40 @@ except ImportError:
     MUTAGEN_OK = False
     print("WARNING: mutagen not installed.  Run: pip install mutagen")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-app = Flask(__name__, static_folder=BASE_DIR)
+app = Flask(__name__, static_folder='.')
 CORS(app)
 
-DOWNLOAD_DIR = os.path.join(BASE_DIR, 'downloads')
+DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), 'downloads')
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 jobs: dict = {}
 
-# ── Solution 3: Rotating User-Agent pool ─────────────────────────────────────
-_USER_AGENTS = [
-    # Chrome on Windows
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    # Chrome on macOS
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    # Firefox on Windows
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0',
-    # Safari on macOS
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
-    # iOS Safari (used by yt-dlp ios client too)
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
-    # Edge on Windows
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
-]
-
-def _random_ua() -> str:
-    return random.choice(_USER_AGENTS)
-
-# Static headers used for non-YouTube requests (Spotify, Deezer, cover art)
-HEADERS = {'User-Agent': _USER_AGENTS[0]}
-
-# ── Solution 2: Cookie browser detection ─────────────────────────────────────
-# Set env var YTDLP_COOKIES_BROWSER=chrome (or firefox / edge / brave / chromium)
-# Leave unset to disable — downloads still work fine without cookies.
-_COOKIES_BROWSER = os.environ.get('YTDLP_COOKIES_BROWSER', '').strip().lower() or None
-if _COOKIES_BROWSER:
-    print(f"[cookies] Will load cookies from browser: {_COOKIES_BROWSER}")
-else:
-    print("[cookies] No browser cookies configured (set YTDLP_COOKIES_BROWSER to enable)")
+HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
+    ),
+}
 
 
-# ── Solution 5: Auto po_token generation (server-side, no manual steps) ──────
-# YouTube requires a Proof-of-Origin token for headless downloads in 2025.
-# We generate it by fetching a real YouTube page and extracting the token
-# the same way a browser would — runs on startup and refreshes every 6 hours.
-# Works fully inside Docker/Render with zero env vars or manual steps.
+# ─────────────────────────────────────────────────────────────────────────────
+# Cookie helpers for YouTube bot-detection bypass
+# ─────────────────────────────────────────────────────────────────────────────
 
-_po_token_lock   = threading.Lock()
-_po_token_value  = None   # "web+<token>" string or None
-_PO_TOKEN_TTL    = 6 * 3600  # refresh every 6 hours
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
 
-def _generate_po_token() -> str | None:
+
+def _best_cookie_source() -> dict:
     """
-    Generate a YouTube po_token by calling yt-dlp itself in a subprocess
-    with --print-traffic and extracting the po_token it negotiates.
-    Falls back to None (downloads still attempted without token).
+    Returns a yt-dlp options fragment for cookie auth.
+    Supports cookies.txt only (browser probing doesn't work in Docker/Render).
+    Place a Netscape-format cookies.txt next to server.py to bypass bot detection.
     """
-    try:
-        result = subprocess.run(
-            [
-                'python', '-m', 'yt_dlp',
-                '--print-traffic',
-                '--skip-download',
-                '--no-warnings',
-                '--quiet',
-                '--extractor-args', 'youtube:player_client=tv_embedded',
-                'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            ],
-            capture_output=True, text=True, timeout=60,
-        )
-        output = result.stdout + result.stderr
-        # yt-dlp logs the token as: [debug] po_token: web+XXXXX
-        for line in output.splitlines():
-            if 'po_token' in line.lower():
-                parts = line.strip().split('po_token')
-                if len(parts) > 1:
-                    raw = parts[-1].strip().lstrip(':').strip()
-                    if raw:
-                        token = raw if raw.startswith('web+') else f'web+{raw}'
-                        print(f"[po_token] Generated: {token[:30]}…")
-                        return token
-        # Token not found in traffic — tv_embedded doesn't always emit it
-        # but the client itself is still less bot-checked, so this is OK.
-        print("[po_token] Not found in traffic output — will run without token")
-        return None
-    except subprocess.TimeoutExpired:
-        print("[po_token] Generation timed out")
-        return None
-    except Exception as exc:
-        print(f"[po_token] Generation failed: {exc}")
-        return None
-
-
-def _refresh_po_token():
-    """Regenerate and store the po_token. Called on startup and every 6 hours."""
-    global _po_token_value
-    token = _generate_po_token()
-    with _po_token_lock:
-        _po_token_value = token
-    print(f"[po_token] {'Active ✓' if token else 'Unavailable — running without token'}")
-
-
-def _po_token_refresh_loop():
-    """Background thread: refresh po_token every _PO_TOKEN_TTL seconds."""
-    while True:
-        time.sleep(_PO_TOKEN_TTL)
-        print("[po_token] TTL reached — refreshing …")
-        _refresh_po_token()
-
-
-def _get_po_token() -> str | None:
-    with _po_token_lock:
-        return _po_token_value
-
-
-# Generate token immediately at import time (non-blocking — runs in bg thread)
-threading.Thread(target=_refresh_po_token, daemon=True, name='po-token-init').start()
-# Start the periodic refresh loop
-threading.Thread(target=_po_token_refresh_loop, daemon=True, name='po-token-refresh').start()
-print("[po_token] Background generation started — will be ready in ~10s")
+    if os.path.exists(COOKIES_FILE):
+        print("[cookies] Using cookies.txt")
+        return {'cookiefile': COOKIES_FILE}
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,7 +86,7 @@ def _best_thumbnail(thumbnails: list) -> str:
 
 
 # ── LAYER 0: Spotify oEmbed (public, no auth, no bot-block) ──────────────────
-def _meta_from_spotify_oembed(track_id: str) -> Optional[dict]:
+def _meta_from_spotify_oembed(track_id: str) -> dict | None:
     """
     Uses Spotify's official oEmbed endpoint — publicly documented, no auth,
     no Spotify Developer account needed, never bot-blocked.
@@ -224,7 +126,7 @@ def _meta_from_spotify_oembed(track_id: str) -> Optional[dict]:
 
 
 # ── LAYER 1: yt-dlp Spotify scrape ───────────────────────────────────────────
-def _meta_from_ytdlp_spotify(track_id: str) -> Optional[dict]:
+def _meta_from_ytdlp_spotify(track_id: str) -> dict | None:
     """
     Layer 0a: yt-dlp Spotify scrape. Works when yt-dlp's extractor is current.
     Returns: {title, artist, album, cover, source} or None.
@@ -251,7 +153,7 @@ def _meta_from_ytdlp_spotify(track_id: str) -> Optional[dict]:
         return None
 
 
-def _meta_from_spotify_embed_scrape(track_id: str) -> Optional[dict]:
+def _meta_from_spotify_embed_scrape(track_id: str) -> dict | None:
     """
     Server-side scrape of Spotify's embed page — no CORS issues, no API key.
     Three sub-strategies tried in order:
@@ -369,7 +271,7 @@ def _meta_from_spotify_embed_scrape(track_id: str) -> Optional[dict]:
 
 
 # ── LAYER 1: Deezer search (confirmation + better cover) ─────────────────────
-def _meta_from_deezer(query: str, title_hint: str = '', artist_hint: str = '') -> Optional[dict]:
+def _meta_from_deezer(query: str, title_hint: str = '', artist_hint: str = '') -> dict | None:
     """
     Search Deezer by 'title artist' query.
     title_hint / artist_hint: when provided, used to pick the best result
@@ -428,23 +330,14 @@ def _search_youtube(title: str, artist: str) -> str:
     """
     Use yt-dlp's built-in ytsearch: to find the best YouTube video.
     Scores results the same way as before.  Returns a YouTube watch URL.
-    Anti-bot: tv_embedded/mweb clients + auto po_token injected if available.
     """
     query   = f'{title} {artist} official audio'
     search  = f'ytsearch5:{query}'
-
-    yt_args: dict = {'player_client': ['tv_embedded', 'mweb']}
-    token = _get_po_token()
-    if token:
-        yt_args['po_token'] = [token]
-
-    opts = {
+    opts    = {
         'quiet': True, 'no_warnings': True,
         'skip_download': True, 'extract_flat': True, 'noplaylist': True,
-        'extractor_args': {'youtube': yt_args},
-        'http_headers': {'User-Agent': _random_ua()},
-        'sleep_interval_requests': 1,
     }
+    opts.update(_best_cookie_source())
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -567,30 +460,8 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
         'retries': 5, 'fragment_retries': 5,
         'extractor_retries': 3,
         'http_chunk_size': 10485760,
-
-        # ── Solution 4+5: tv_embedded/mweb + auto po_token ───────────────────
-        # tv_embedded = YouTube TV client — rarely bot-checked in 2025.
-        # mweb = mobile web fallback.
-        # po_token auto-generated on startup, refreshed every 6 hrs by bg thread.
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'mweb'],
-                **({'po_token': [_get_po_token()]} if _get_po_token() else {}),
-            },
-        },
-
-        # ── Solution 3: rotating User-Agent + request sleep jitter ───────────
-        'http_headers': {'User-Agent': _random_ua()},
-        'sleep_interval':          2,   # min seconds between requests
-        'max_sleep_interval':      5,   # max seconds (randomised in between)
-        'sleep_interval_requests': 1,   # sleep between every fragment request
     }
-
-    # ── Solution 2: browser cookies (optional, set YTDLP_COOKIES_BROWSER) ────
-    # cookiesfrombrowser expects a tuple: (browser_name,) — NOT a plain string.
-    if _COOKIES_BROWSER:
-        ydl_opts['cookiesfrombrowser'] = (_COOKIES_BROWSER,)
-        print(f"[download] Using cookies from browser: {_COOKIES_BROWSER}")
+    ydl_opts.update(_best_cookie_source())
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -614,12 +485,11 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
 
     except Exception as exc:
         err = str(exc)
-        if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm', 'blocked', 'captcha', 'login', 'age')):
+        if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
             err = (
                 'YouTube blocked the download (bot detection). '
-                'The server is using tv_embedded/mweb clients with auto po_token. '
-                'Try again in 30s (po_token may still be generating on first start). '
-                'If this keeps happening: run `pip install -U yt-dlp` to get the latest extractor.'
+                'Fix: export a cookies.txt from your browser using the '
+                '"Get cookies.txt LOCALLY" extension, then place it next to server.py.'
             )
         import traceback; traceback.print_exc()
         jobs[job_id].update({'status': 'error', 'error': err})
@@ -631,7 +501,7 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
 
 @app.route('/')
 def index():
-    return send_from_directory(BASE_DIR, 'index.html')
+    return send_from_directory('.', 'index.html')
 
 
 @app.route('/favicon.ico')
@@ -649,12 +519,20 @@ def favicon():
 
 @app.route('/style.css')
 def stylesheet():
-    return send_from_directory(BASE_DIR, 'style.css')
+    return send_from_directory('.', 'style.css')
 
 
 @app.route('/api/ping')
 def ping():
     return jsonify({'ok': True})
+
+
+@app.route('/api/cookie-status')
+def cookie_status():
+    if os.path.exists(COOKIES_FILE):
+        return jsonify({'source': 'file', 'ok': True, 'browser': 'file'})
+    return jsonify({'source': 'none', 'ok': False,
+                    'hint': 'Drop a cookies.txt next to server.py to bypass YouTube bot errors.'})
 
 
 @app.route('/api/spotify-meta')
@@ -804,13 +682,11 @@ def cleanup(job_id):
 
 
 if __name__ == '__main__':
-    print("\n🎵  Spotidrop server v4 starting …")
+    port = int(os.environ.get('PORT', 8000))
+    print(f"\n🎵  Spotidrop server v2 starting on port {port} …")
     print("📦  Requires: pip install flask flask-cors yt-dlp mutagen requests")
-    print("🌐  Open:     http://localhost:8000\n")
-    print("ℹ️   Architecture: yt-dlp Spotify scrape → Deezer cover → yt-dlp ytsearch → bestaudio/best")
-    print("🛡️   Anti-bot: player_client=tv_embedded/mweb | rotating UA | sleep jitter | auto po_token")
-    print(f"🍪  Cookies:  {'browser=' + _COOKIES_BROWSER if _COOKIES_BROWSER else 'disabled (set YTDLP_COOKIES_BROWSER=chrome to enable)'}")
-    print("🔑  po_token: auto-generating in background (refreshes every 6h) …")
+    print(f"🌐  Open:     http://localhost:{port}\n")
+    print("ℹ️   Architecture: Spotify embed scrape → Deezer cover → yt-dlp ytsearch → bestaudio/best")
     if not MUTAGEN_OK:
         print("⚠️   mutagen missing — run: pip install mutagen\n")
-    app.run(host='0.0.0.0', port=8000, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)

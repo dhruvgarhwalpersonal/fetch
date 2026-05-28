@@ -3,4 +3,3 @@ flask-cors==4.0.1
 yt-dlp>=2025.09.26
 mutagen==1.47.0
 requests==2.32.3
-yt-dlp-getpot-wpc

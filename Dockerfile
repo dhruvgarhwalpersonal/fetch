@@ -1,8 +1,8 @@
-FROM python:3-slim
+FROM python:3.11-slim
 
-# Install FFmpeg + Node.js (Node is used by bgutil po_token helper)
+# FFmpeg is all we need — yt-dlp uses it to convert audio to MP3
 RUN apt-get update && \
-    apt-get install -y ffmpeg nodejs npm && \
+    apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -11,12 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# ── Anti-bot: optional browser cookie source ──────────────────────────────────
-# Set at runtime via Render env var dashboard: YTDLP_COOKIES_BROWSER=chrome
-# Leave unset (default) — tv_embedded + auto po_token handles it.
-ENV YTDLP_COOKIES_BROWSER=""
-
-# po_token is generated automatically on startup — no env var needed.
+# Render injects PORT automatically; default to 8000 for local Docker runs
+ENV PORT=8000
 
 EXPOSE 8000
 CMD ["python", "server.py"]
