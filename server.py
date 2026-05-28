@@ -162,6 +162,71 @@ def _best_cookie_source() -> dict:
     return {}
 
 
+def _has_cookies() -> bool:
+    """Returns True if any cookie source is currently active."""
+    if os.environ.get('YOUTUBE_COOKIES', '').strip():
+        return bool(_ensure_env_cookie_file())
+    if os.path.exists(COOKIES_FILE):
+        return True
+    if _cookie_cache.get('browser'):
+        return True
+    return False
+
+
+def _build_ydl_opts(out_template: str, progress_hooks: list = None, quality: str = '192') -> dict:
+    """
+    Build a yt-dlp options dict that correctly handles the cookie vs Android-client conflict.
+
+    ROOT CAUSE of "Requested format is not available":
+      Cookies expose a wider authenticated format list.
+      Android player_client fetches a DIFFERENT format list.
+      yt-dlp merges them and picks a format ID that only exists in one list,
+      then tries to download it via the other client's URL → format not found.
+
+    FIX: When cookies are present, use web client only (consistent format list).
+         When no cookies, use android client (best bot-detection bypass without auth).
+    """
+    cookie_opts = _best_cookie_source()
+    has_cookies = bool(cookie_opts)
+
+    # CRITICAL: don't mix cookie-auth format list with android client format list.
+    # Web client + cookies = consistent authenticated format list.
+    # Android client alone = best unauthenticated bypass.
+    if has_cookies:
+        player_clients = ['web']        # web gives stable format IDs that match cookie-auth URLs
+    else:
+        player_clients = ['android', 'web']  # android bypasses bot detection without cookies
+
+    opts = {
+        # Fallback chain: prefer webm/m4a open containers, then anything
+        'format': (
+            'bestaudio[ext=webm]/bestaudio[ext=m4a]/'
+            'bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best'
+        ),
+        # Sort by bitrate → sample rate → container (prevents picking weird format IDs)
+        'format_sort': ['abr', 'asr', 'ext'],
+        'outtmpl': out_template,
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'retries': 5,
+        'fragment_retries': 5,
+        'extractor_retries': 3,
+        'http_chunk_size': 10485760,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': quality,
+        }],
+        'extractor_args': {'youtube': {'player_client': player_clients}},
+    }
+    if progress_hooks:
+        opts['progress_hooks'] = progress_hooks
+
+    opts.update(cookie_opts)
+    return opts
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Metadata helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -539,29 +604,52 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
     out_template = os.path.join(DOWNLOAD_DIR, f'{job_id}.%(ext)s')
     hook = lambda d: _progress_hook(job_id, d)
 
-    ydl_opts = {
-        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best',
-        'format_sort': ['abr', 'asr', 'ext'],
-        'outtmpl': out_template,
-        'quiet': True, 'no_warnings': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }],
-        'writethumbnail': False, 'writeinfojson': False,
-        'writedescription': False, 'addmetadata': False,
-        'progress_hooks': [hook],
-        'retries': 5, 'fragment_retries': 5,
-        'extractor_retries': 3,
-        'http_chunk_size': 10485760,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-    }
-    ydl_opts.update(_best_cookie_source())
+    # Build smart opts: web client with cookies, android without (avoids format mismatch)
+    ydl_opts = _build_ydl_opts(out_template, progress_hooks=[hook], quality='320')
+
+    def _do_download(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([youtube_url])
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([youtube_url])
+        try:
+            _do_download(ydl_opts)
+        except Exception as first_err:
+            first_err_str = str(first_err).lower()
+            is_format_err = (
+                'format is not available' in first_err_str or
+                'requested format' in first_err_str or
+                'no video formats' in first_err_str or
+                'no suitable formats' in first_err_str
+            )
+            if is_format_err:
+                # Retry with bare 'best' format and no player_client override
+                print(f"[download/{job_id}] Format error on attempt 1, retrying with fallback: {first_err}")
+                jobs[job_id]['progress'] = 5  # reset so progress bar doesn't look stuck
+                fallback_opts = {
+                    'format': 'best',
+                    'outtmpl': out_template,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'noplaylist': True,
+                    'retries': 3,
+                    'fragment_retries': 3,
+                    'http_chunk_size': 10485760,
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '320',
+                    }],
+                    'writethumbnail': False,
+                    'writeinfojson': False,
+                    'writedescription': False,
+                    'addmetadata': False,
+                    'progress_hooks': [hook],
+                }
+                fallback_opts.update(_best_cookie_source())
+                _do_download(fallback_opts)
+            else:
+                raise
 
         mp3_path = os.path.join(DOWNLOAD_DIR, f'{job_id}.mp3')
         if not os.path.exists(mp3_path):
@@ -588,7 +676,10 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
                 'Fix: place a cookies.txt next to server.py. '
                 'Export it from your browser with the "Get cookies.txt LOCALLY" extension.'
             )
-        elif 'format is not available' in err.lower() or 'requested format' in err.lower():
+        elif any(kw in err.lower() for kw in (
+            'format is not available', 'requested format',
+            'no video formats', 'no suitable formats'
+        )):
             err = 'Could not find a downloadable audio format for this video. Try a different track.'
         import traceback; traceback.print_exc()
         jobs[job_id].update({'status': 'error', 'error': err})
@@ -761,26 +852,49 @@ def stream_download():
     tmp_dir  = tempfile.mkdtemp(prefix='fetch_')
     mp3_path = os.path.join(tmp_dir, 'audio.mp3')
 
-    try:
-        ydl_opts = {
-            'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best',
-            'format_sort': ['abr', 'asr', 'ext'],
-            'outtmpl': os.path.join(tmp_dir, 'audio.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'noplaylist': True,
-            # Android client bypasses bot detection; web as fallback only
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        }
-        ydl_opts.update(_best_cookie_source())
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _attempt_download(opts: dict) -> bool:
+        """Run yt-dlp download with given opts. Returns True on success."""
+        with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([yt_url])
+        return True
+
+    try:
+        # Attempt 1: smart opts (web client with cookies, android without)
+        out_template = os.path.join(tmp_dir, 'audio.%(ext)s')
+        ydl_opts = _build_ydl_opts(out_template, quality='192')
+
+        try:
+            _attempt_download(ydl_opts)
+        except Exception as first_err:
+            first_err_str = str(first_err).lower()
+            is_format_err = (
+                'format is not available' in first_err_str or
+                'requested format' in first_err_str or
+                'no video formats' in first_err_str or
+                'no suitable formats' in first_err_str
+            )
+            if is_format_err:
+                # Attempt 2: strip extractor_args entirely + use simplest format
+                # This handles edge cases where the player_client list itself causes
+                # format ID mismatches on certain videos (live streams, premieres, etc.)
+                print(f"[stream] Format error on attempt 1, retrying with fallback opts: {first_err}")
+                fallback_opts = {
+                    'format': 'best',
+                    'outtmpl': out_template,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'noplaylist': True,
+                    'retries': 3,
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                }
+                fallback_opts.update(_best_cookie_source())
+                _attempt_download(fallback_opts)
+            else:
+                raise  # re-raise non-format errors immediately
 
         # yt-dlp may name it audio.mp3 or audio.webm.mp3 etc — find it
         if not os.path.exists(mp3_path):
@@ -824,7 +938,10 @@ def stream_download():
         if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
             err = ('YouTube blocked the download (bot detection). '
                    'Add a cookies.txt to your repo to fix this.')
-        elif 'format is not available' in err.lower() or 'requested format' in err.lower():
+        elif any(kw in err.lower() for kw in (
+            'format is not available', 'requested format',
+            'no video formats', 'no suitable formats'
+        )):
             err = 'Could not find a downloadable audio format for this video. Try a different track.'
         return jsonify({'error': err}), 500
 
