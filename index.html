@@ -86,7 +86,10 @@
 </div><!-- .glass-shell -->
 
 <script>
-const SERVER = 'http://localhost:8000';
+// Auto-detect server: same origin when deployed, localhost when running locally
+const SERVER = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? 'http://localhost:8000'
+  : window.location.origin;
 const $      = id => document.getElementById(id);
 const wait   = ms => new Promise(r => setTimeout(r, ms));
 

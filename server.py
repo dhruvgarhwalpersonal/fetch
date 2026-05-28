@@ -13,7 +13,8 @@ Metadata pipeline (fully server-side, no Spotify/YouTube API keys):
   Download → bestaudio/best        (always resolves, FFmpeg → mp3/320)
 """
 
-import os, re, threading, uuid, time
+import os, re, threading, uuid
+from typing import Optional
 from difflib import SequenceMatcher
 import requests
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -69,7 +70,7 @@ def _best_thumbnail(thumbnails: list) -> str:
 
 
 # ── LAYER 0: Spotify oEmbed (public, no auth, no bot-block) ──────────────────
-def _meta_from_spotify_oembed(track_id: str) -> dict | None:
+def _meta_from_spotify_oembed(track_id: str) -> Optional[dict]:
     """
     Uses Spotify's official oEmbed endpoint — publicly documented, no auth,
     no Spotify Developer account needed, never bot-blocked.
@@ -109,7 +110,7 @@ def _meta_from_spotify_oembed(track_id: str) -> dict | None:
 
 
 # ── LAYER 1: yt-dlp Spotify scrape ───────────────────────────────────────────
-def _meta_from_ytdlp_spotify(track_id: str) -> dict | None:
+def _meta_from_ytdlp_spotify(track_id: str) -> Optional[dict]:
     """
     Layer 0a: yt-dlp Spotify scrape. Works when yt-dlp's extractor is current.
     Returns: {title, artist, album, cover, source} or None.
@@ -136,7 +137,7 @@ def _meta_from_ytdlp_spotify(track_id: str) -> dict | None:
         return None
 
 
-def _meta_from_spotify_embed_scrape(track_id: str) -> dict | None:
+def _meta_from_spotify_embed_scrape(track_id: str) -> Optional[dict]:
     """
     Server-side scrape of Spotify's embed page — no CORS issues, no API key.
     Three sub-strategies tried in order:
@@ -254,7 +255,7 @@ def _meta_from_spotify_embed_scrape(track_id: str) -> dict | None:
 
 
 # ── LAYER 1: Deezer search (confirmation + better cover) ─────────────────────
-def _meta_from_deezer(query: str, title_hint: str = '', artist_hint: str = '') -> dict | None:
+def _meta_from_deezer(query: str, title_hint: str = '', artist_hint: str = '') -> Optional[dict]:
     """
     Search Deezer by 'title artist' query.
     title_hint / artist_hint: when provided, used to pick the best result
