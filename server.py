@@ -175,36 +175,18 @@ def _has_cookies() -> bool:
 
 def _build_ydl_opts(out_template: str, progress_hooks: list = None, quality: str = '192') -> dict:
     """
-    Build a yt-dlp options dict that correctly handles the cookie vs Android-client conflict.
+    Build yt-dlp options with cookies and format kept fully separate.
 
-    ROOT CAUSE of "Requested format is not available":
-      Cookies expose a wider authenticated format list.
-      Android player_client fetches a DIFFERENT format list.
-      yt-dlp merges them and picks a format ID that only exists in one list,
-      then tries to download it via the other client's URL → format not found.
-
-    FIX: When cookies are present, use web client only (consistent format list).
-         When no cookies, use android client (best bot-detection bypass without auth).
+    - Cookies  = bot bypass ONLY. Never use the extended authenticated format list
+                 that cookies expose (those IDs can't be streamed from a server IP).
+    - Format   = always simple 'bestaudio/best', same as pre-cookie behaviour.
+    - Android  = always active regardless of cookies; its format list is public/stable
+                 and does not conflict with the simple format string.
     """
     cookie_opts = _best_cookie_source()
-    has_cookies = bool(cookie_opts)
-
-    # CRITICAL: don't mix cookie-auth format list with android client format list.
-    # Web client + cookies = consistent authenticated format list.
-    # Android client alone = best unauthenticated bypass.
-    if has_cookies:
-        player_clients = ['web']        # web gives stable format IDs that match cookie-auth URLs
-    else:
-        player_clients = ['android', 'web']  # android bypasses bot detection without cookies
 
     opts = {
-        # Fallback chain: prefer webm/m4a open containers, then anything
-        'format': (
-            'bestaudio[ext=webm]/bestaudio[ext=m4a]/'
-            'bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best'
-        ),
-        # Sort by bitrate → sample rate → container (prevents picking weird format IDs)
-        'format_sort': ['abr', 'asr', 'ext'],
+        'format': 'bestaudio/best',
         'outtmpl': out_template,
         'quiet': True,
         'no_warnings': True,
@@ -218,7 +200,7 @@ def _build_ydl_opts(out_template: str, progress_hooks: list = None, quality: str
             'preferredcodec': 'mp3',
             'preferredquality': quality,
         }],
-        'extractor_args': {'youtube': {'player_client': player_clients}},
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
     }
     if progress_hooks:
         opts['progress_hooks'] = progress_hooks
