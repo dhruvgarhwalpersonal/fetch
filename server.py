@@ -176,14 +176,17 @@ def _has_cookies() -> bool:
 def _download_ydl_opts(out_template: str, progress_hooks: list = None, quality: str = '192') -> dict:
     """
     Build yt-dlp download options.
-    - With cookies: plain bestaudio/best + cookie auth (most compatible, no client override).
+    - With cookies: cookie auth + android/web player clients as fallback.
     - Without cookies: tv_embedded player client bypasses bot-detection without auth.
+    Format selector uses a wide fallback chain so restricted/age-gated videos
+    still resolve to a downloadable format.
     """
     cookie_opts = _best_cookie_source()
     has_cookies = bool(cookie_opts)
 
     opts = {
-        'format': 'bestaudio/best',
+        # Wide format fallback: best audio-only → any audio → best video+audio → anything
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         'outtmpl': out_template,
         'quiet': True,
         'no_warnings': True,
@@ -200,9 +203,10 @@ def _download_ydl_opts(out_template: str, progress_hooks: list = None, quality: 
     }
 
     if has_cookies:
-        # Cookies present: plain bestaudio/best with auth — most compatible
+        # Cookies present: use auth + android/web clients for maximum format availability
         opts.update(cookie_opts)
-        print("[yt-dlp] Cookies present — using bestaudio/best with auth")
+        opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web']}}
+        print("[yt-dlp] Cookies present — using bestaudio with android/web clients")
     else:
         # No cookies: tv_embedded client works without auth, avoids bot-detection
         opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
