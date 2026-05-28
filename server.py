@@ -173,20 +173,28 @@ def _has_cookies() -> bool:
     return False
 
 
-def _build_ydl_opts(out_template: str, progress_hooks: list = None, quality: str = '192') -> dict:
+def _build_ydl_opts(out_template: str, progress_hooks: list = None, quality: str = '192',
+                    client: str = 'android') -> dict:
     """
-    Build yt-dlp options with cookies and format kept fully separate.
+    Build yt-dlp options.
 
-    - Cookies  = bot bypass ONLY. Never use the extended authenticated format list
-                 that cookies expose (those IDs can't be streamed from a server IP).
-    - Format   = always simple 'bestaudio/best', same as pre-cookie behaviour.
-    - Android  = always active regardless of cookies; its format list is public/stable
-                 and does not conflict with the simple format string.
+    client choices:
+      'android'    — best bot bypass, used for attempt 1
+      'mweb'       — mobile web, simpler format list, used for attempt 2
+      'tv_embedded'— TV client, most permissive format list, used for attempt 3
     """
     cookie_opts = _best_cookie_source()
 
+    client_map = {
+        'android':     ['android', 'web'],
+        'mweb':        ['mweb'],
+        'tv_embedded': ['tv_embedded'],
+    }
+    player_clients = client_map.get(client, ['android', 'web'])
+
     opts = {
-        'format': 'bestaudio/best',
+        # 140 = m4a 128kbps (always available), fallback to any bestaudio, then best
+        'format': '140/bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': out_template,
         'quiet': True,
         'no_warnings': True,
@@ -200,13 +208,36 @@ def _build_ydl_opts(out_template: str, progress_hooks: list = None, quality: str
             'preferredcodec': 'mp3',
             'preferredquality': quality,
         }],
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        'extractor_args': {'youtube': {'player_client': player_clients}},
     }
     if progress_hooks:
         opts['progress_hooks'] = progress_hooks
 
     opts.update(cookie_opts)
     return opts
+
+
+def _is_format_error(exc: Exception) -> bool:
+    """
+    Returns True if the exception is a yt-dlp format-availability error.
+    Catches both DownloadError.msg and str() representations.
+    """
+    # yt-dlp wraps errors in DownloadError; check .msg attribute too
+    msg = ''
+    if hasattr(exc, 'msg'):
+        msg = (exc.msg or '').lower()
+    msg += ' ' + str(exc).lower()
+
+    FORMAT_KEYWORDS = (
+        'format is not available',
+        'requested format',
+        'no video formats',
+        'no suitable formats',
+        'format unavailable',
+        'none of the requested formats',
+        'not available in your country',   # geo-blocks manifest as format errors too
+    )
+    return any(kw in msg for kw in FORMAT_KEYWORDS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -586,52 +617,33 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
     out_template = os.path.join(DOWNLOAD_DIR, f'{job_id}.%(ext)s')
     hook = lambda d: _progress_hook(job_id, d)
 
-    # Build smart opts: web client with cookies, android without (avoids format mismatch)
-    ydl_opts = _build_ydl_opts(out_template, progress_hooks=[hook], quality='320')
-
     def _do_download(opts):
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([youtube_url])
 
     try:
+        # Attempt 1: android client
         try:
-            _do_download(ydl_opts)
-        except Exception as first_err:
-            first_err_str = str(first_err).lower()
-            is_format_err = (
-                'format is not available' in first_err_str or
-                'requested format' in first_err_str or
-                'no video formats' in first_err_str or
-                'no suitable formats' in first_err_str
-            )
-            if is_format_err:
-                # Retry with bare 'best' format and no player_client override
-                print(f"[download/{job_id}] Format error on attempt 1, retrying with fallback: {first_err}")
-                jobs[job_id]['progress'] = 5  # reset so progress bar doesn't look stuck
-                fallback_opts = {
-                    'format': 'best',
-                    'outtmpl': out_template,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'noplaylist': True,
-                    'retries': 3,
-                    'fragment_retries': 3,
-                    'http_chunk_size': 10485760,
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '320',
-                    }],
-                    'writethumbnail': False,
-                    'writeinfojson': False,
-                    'writedescription': False,
-                    'addmetadata': False,
-                    'progress_hooks': [hook],
-                }
-                fallback_opts.update(_best_cookie_source())
-                _do_download(fallback_opts)
-            else:
+            _do_download(_build_ydl_opts(out_template, progress_hooks=[hook], quality='320', client='android'))
+        except Exception as e1:
+            if not _is_format_error(e1):
                 raise
+            print(f"[download/{job_id}] Attempt 1 (android) format error: {e1} — trying mweb")
+            jobs[job_id]['progress'] = 5
+
+            # Attempt 2: mweb client
+            try:
+                _do_download(_build_ydl_opts(out_template, progress_hooks=[hook], quality='320', client='mweb'))
+            except Exception as e2:
+                if not _is_format_error(e2):
+                    raise
+                print(f"[download/{job_id}] Attempt 2 (mweb) format error: {e2} — trying tv_embedded")
+                jobs[job_id]['progress'] = 5
+
+                # Attempt 3: tv_embedded
+                tv_opts = _build_ydl_opts(out_template, progress_hooks=[hook], quality='320', client='tv_embedded')
+                tv_opts['format'] = 'bestaudio/best'
+                _do_download(tv_opts)
 
         mp3_path = os.path.join(DOWNLOAD_DIR, f'{job_id}.mp3')
         if not os.path.exists(mp3_path):
@@ -841,42 +853,28 @@ def stream_download():
         return True
 
     try:
-        # Attempt 1: smart opts (web client with cookies, android without)
         out_template = os.path.join(tmp_dir, 'audio.%(ext)s')
-        ydl_opts = _build_ydl_opts(out_template, quality='192')
 
+        # Attempt 1: android client — best bot bypass, format 140/bestaudio/best
         try:
-            _attempt_download(ydl_opts)
-        except Exception as first_err:
-            first_err_str = str(first_err).lower()
-            is_format_err = (
-                'format is not available' in first_err_str or
-                'requested format' in first_err_str or
-                'no video formats' in first_err_str or
-                'no suitable formats' in first_err_str
-            )
-            if is_format_err:
-                # Attempt 2: strip extractor_args entirely + use simplest format
-                # This handles edge cases where the player_client list itself causes
-                # format ID mismatches on certain videos (live streams, premieres, etc.)
-                print(f"[stream] Format error on attempt 1, retrying with fallback opts: {first_err}")
-                fallback_opts = {
-                    'format': 'best',
-                    'outtmpl': out_template,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'noplaylist': True,
-                    'retries': 3,
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                }
-                fallback_opts.update(_best_cookie_source())
-                _attempt_download(fallback_opts)
-            else:
-                raise  # re-raise non-format errors immediately
+            _attempt_download(_build_ydl_opts(out_template, quality='192', client='android'))
+        except Exception as e1:
+            if not _is_format_error(e1):
+                raise
+            print(f"[stream] Attempt 1 (android) format error: {e1} — trying mweb client")
+
+            # Attempt 2: mweb client — simpler format list, avoids android-specific IDs
+            try:
+                _attempt_download(_build_ydl_opts(out_template, quality='192', client='mweb'))
+            except Exception as e2:
+                if not _is_format_error(e2):
+                    raise
+                print(f"[stream] Attempt 2 (mweb) format error: {e2} — trying tv_embedded client")
+
+                # Attempt 3: tv_embedded — most permissive, catches geo-locked / age-gated
+                tv_opts = _build_ydl_opts(out_template, quality='192', client='tv_embedded')
+                tv_opts['format'] = 'bestaudio/best'
+                _attempt_download(tv_opts)
 
         # yt-dlp may name it audio.mp3 or audio.webm.mp3 etc — find it
         if not os.path.exists(mp3_path):
