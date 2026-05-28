@@ -70,21 +70,69 @@ HEADERS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # Cookie helpers for YouTube bot-detection bypass
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Priority order:
+#   1. YOUTUBE_COOKIES env var  — base64-encoded cookies.txt content (Render secret)
+#   2. cookies.txt file on disk — for local development
+#   3. Browser cookie probe     — local dev fallback
+#   4. No cookies               — Android client extractor args still used
+#
+# To set up on Render:
+#   base64 < cookies.txt | tr -d '\n'   → copy the output
+#   Render dashboard → Environment → Add secret: YOUTUBE_COOKIES = <paste>
+# ─────────────────────────────────────────────────────────────────────────────
 
-COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
-_BROWSERS    = ['chrome', 'chromium', 'brave', 'edge', 'firefox', 'opera', 'vivaldi', 'safari']
-_cookie_cache: dict = {}   # {'browser': 'chrome'} or {}
+import base64 as _base64
+import tempfile as _tempfile
+
+COOKIES_FILE     = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+_BROWSERS        = ['chrome', 'chromium', 'brave', 'edge', 'firefox', 'opera', 'vivaldi', 'safari']
+_cookie_cache: dict = {}          # {'browser': 'chrome'} or {'tmp_file': '/tmp/...'} or {}
+_env_cookie_file: str | None = None   # path to temp file written from env var
+
+
+def _ensure_env_cookie_file() -> str | None:
+    """
+    If YOUTUBE_COOKIES env var is set, decode it and write a temp cookies.txt
+    once per process.  Returns the path, or None if env var not set.
+    """
+    global _env_cookie_file
+    if _env_cookie_file and os.path.exists(_env_cookie_file):
+        return _env_cookie_file
+
+    raw = os.environ.get('YOUTUBE_COOKIES', '').strip()
+    if not raw:
+        return None
+
+    try:
+        content = _base64.b64decode(raw).decode('utf-8')
+        fd, path = _tempfile.mkstemp(prefix='yt_cookies_', suffix='.txt')
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+        _env_cookie_file = path
+        print(f"[cookies] ✓ Loaded {len(content.splitlines())} cookie lines from YOUTUBE_COOKIES env var")
+        return path
+    except Exception as exc:
+        print(f"[cookies] Failed to decode YOUTUBE_COOKIES env var: {exc}")
+        return None
 
 
 def _best_cookie_source() -> dict:
     """
     Returns a yt-dlp options fragment for cookie auth.
-    Priority: cookies.txt file > cached browser > browser probe > nothing.
+    Priority: YOUTUBE_COOKIES env var > cookies.txt file > browser probe > nothing.
     """
+    # 1. Env var (Render secret) — highest priority, works in production
+    env_path = _ensure_env_cookie_file()
+    if env_path:
+        return {'cookiefile': env_path}
+
+    # 2. Local cookies.txt on disk — for local development
     if os.path.exists(COOKIES_FILE):
-        print(f"[cookies] Using cookies.txt")
+        print("[cookies] Using local cookies.txt file")
         return {'cookiefile': COOKIES_FILE}
 
+    # 3. Browser probe — local dev only (no browsers on Render)
     cached = _cookie_cache.get('browser')
     if cached:
         return {'cookiesfrombrowser': (cached,)}
@@ -109,7 +157,8 @@ def _best_cookie_source() -> dict:
             else:
                 print(f"[cookies] {browser}: not available")
 
-    print("[cookies] No working browser cookies found — proceeding without")
+    # 4. Nothing — Android client extractor args still provide some bypass
+    print("[cookies] No cookie source found — proceeding without (Android client active)")
     return {}
 
 
@@ -576,13 +625,18 @@ def ping():
 
 @app.route('/api/cookie-status')
 def cookie_status():
+    # Priority mirrors _best_cookie_source()
+    if os.environ.get('YOUTUBE_COOKIES', '').strip():
+        env_path = _ensure_env_cookie_file()
+        if env_path:
+            return jsonify({'source': 'env', 'ok': True, 'browser': 'env-var'})
     if os.path.exists(COOKIES_FILE):
         return jsonify({'source': 'file', 'ok': True, 'browser': 'file'})
     cached = _cookie_cache.get('browser')
     if cached:
         return jsonify({'source': 'browser', 'browser': cached, 'ok': True})
     return jsonify({'source': 'none', 'ok': False,
-                    'hint': 'Drop a cookies.txt next to server.py to bypass YouTube bot errors.'})
+                    'hint': 'Set YOUTUBE_COOKIES env var on Render (base64-encoded cookies.txt) to bypass YouTube bot errors.'})
 
 
 @app.route('/api/spotify-meta')
