@@ -1,5 +1,5 @@
 flask==3.0.3
 flask-cors==4.0.1
-yt-dlp==2024.8.6
+yt-dlp==2026.03.17
 mutagen==1.47.0
 requests==2.32.3

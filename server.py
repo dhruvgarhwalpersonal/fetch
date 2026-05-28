@@ -36,6 +36,23 @@ except ImportError:
 app = Flask(__name__, static_folder='.')
 CORS(app)
 
+# ── Auto-update yt-dlp on startup ─────────────────────────────────────────────
+# Render caches the Docker image; yt-dlp goes stale within days and gets
+# bot-blocked. Auto-updating at boot keeps it current without a redeploy.
+def _autoupdate_ytdlp():
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ['pip', 'install', '--upgrade', '--quiet', 'yt-dlp'],
+            capture_output=True, text=True, timeout=60
+        )
+        print(f"[yt-dlp] auto-update: {result.stdout.strip() or 'already up to date'}")
+    except Exception as exc:
+        print(f"[yt-dlp] auto-update failed (non-fatal): {exc}")
+
+import threading as _threading
+_threading.Thread(target=_autoupdate_ytdlp, daemon=True).start()
+
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), 'downloads')
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -363,6 +380,8 @@ def _search_youtube(title: str, artist: str) -> str:
     opts    = {
         'quiet': True, 'no_warnings': True,
         'skip_download': True, 'extract_flat': True, 'noplaylist': True,
+        # Use Android client — bypasses bot detection without cookies
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
     }
     opts.update(_best_cookie_source())
 
@@ -697,6 +716,8 @@ def stream_download():
                 'preferredquality': '192',
             }],
             'noplaylist': True,
+            # Use Android client — bypasses bot detection without cookies
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
         }
         ydl_opts.update(_best_cookie_source())
 
