@@ -541,7 +541,7 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
 
     ydl_opts = {
         # bestaudio/best: yt-dlp resolves this at runtime — always works
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best',
         'outtmpl': out_template,
         'quiet': True, 'no_warnings': True,
         'postprocessors': [{
@@ -760,7 +760,7 @@ def stream_download():
 
     try:
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best',
             'outtmpl': os.path.join(tmp_dir, 'audio.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
