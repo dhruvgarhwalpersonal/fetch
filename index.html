@@ -5,601 +5,488 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fetch — Download any Spotify track</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<style>
-:root {
-  --bg:         #06080c;
-  --bg2:        #0a0d13;
-  --bg3:        #0f1520;
-  --surface:    rgba(255,255,255,0.028);
-  --surface2:   rgba(255,255,255,0.055);
-  --surface3:   rgba(255,255,255,0.085);
-  --accent:        #1DB954;
-  --accent-hi:     #3de87a;
-  --accent-dim:    rgba(29,185,84,0.10);
-  --accent-glow:   rgba(29,185,84,0.20);
-  --accent-soft:   rgba(29,185,84,0.06);
-  --accent-rgb:    29,185,84;
-  --teal:       #0ff4c6;
-  --danger:     #ff4f5e;
-  --text:       #eef2f7;
-  --text2:      #8fa3b8;
-  --muted:      #4a5e72;
-  --muted2:     #2e3d4f;
-  --border:     rgba(255,255,255,0.048);
-  --border2:    rgba(255,255,255,0.088);
-  --border3:    rgba(255,255,255,0.14);
-  --grid-size:  52px;
-  --radius-sm:  8px;
-  --radius:     14px;
-  --radius-lg:  20px;
-  --radius-xl:  28px;
-  --ease:     cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
-html, body { min-height: 100vh; color: var(--text); font-family: 'Syne', sans-serif; overflow-x: hidden; }
-
-body {
-  background-color: var(--bg);
-  background-image:
-    repeating-linear-gradient(0deg, transparent, transparent calc(var(--grid-size) - 1px), rgba(255,255,255,0.014) calc(var(--grid-size) - 1px), rgba(255,255,255,0.014) var(--grid-size)),
-    repeating-linear-gradient(90deg, transparent, transparent calc(var(--grid-size) - 1px), rgba(255,255,255,0.014) calc(var(--grid-size) - 1px), rgba(255,255,255,0.014) var(--grid-size));
-  background-size: var(--grid-size) var(--grid-size);
-}
-
-body::before {
-  content: '';
-  position: fixed; inset: 0;
-  pointer-events: none; z-index: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
-  background-repeat: repeat; background-size: 300px;
-  opacity: 0.45; mix-blend-mode: overlay;
-  transform: translateZ(0); will-change: transform;
-}
-
-/* Aurora background */
-#bg-aurora {
-  position: fixed; inset: -60px; z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse 70% 60% at 30% 40%, rgba(29,185,84,0.18) 0%, transparent 70%),
-              radial-gradient(ellipse 50% 50% at 75% 65%, rgba(15,244,198,0.09) 0%, transparent 65%);
-  filter: blur(80px) saturate(1.2) brightness(0.22);
-  transform: translateZ(0);
-}
-#bg-aurora-2 {
-  position: fixed; inset: 0; z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse 85% 75% at 50% 50%, transparent 30%, rgba(0,0,0,0.72) 100%);
-  opacity: 0.8;
-  transform: translateZ(0);
-}
-
-.glass-shell { position: relative; z-index: 1; min-height: 100vh; }
-
-.page {
-  position: relative; z-index: 1;
-  width: 100%; max-width: 1100px;
-  margin: 0 auto;
-  padding: 48px 60px 100px;
-}
-
-/* ── HEADER ── */
-header {
-  display: flex; align-items: center; gap: 14px;
-  margin-bottom: 100px;
-  animation: fadeDown 0.6s var(--ease) both;
-}
-
-.logo-mark {
-  width: 40px; height: 40px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hi) 100%);
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-  box-shadow: 0 0 0 1px rgba(var(--accent-rgb),0.4), 0 0 18px rgba(var(--accent-rgb),0.28);
-  position: relative; cursor: pointer;
-  transition: transform 0.3s var(--ease), box-shadow 0.3s;
-}
-.logo-mark::before {
-  content: ''; position: absolute; inset: -3px;
-  border-radius: 50%; border: 1px solid rgba(var(--accent-rgb),0.22);
-  animation: logoRing 3s ease-in-out infinite;
-}
-.logo-mark:hover {
-  transform: scale(1.08) rotate(-5deg);
-  box-shadow: 0 0 0 1px rgba(var(--accent-rgb),0.6), 0 0 28px rgba(var(--accent-rgb),0.45);
-}
-.logo-mark svg { width: 17px; height: 17px; fill: #000; z-index: 1; }
-
-.logo-text {
-  font-size: 22px; font-weight: 800; letter-spacing: -0.8px;
-  background: linear-gradient(135deg, var(--text) 0%, rgba(255,255,255,0.62) 100%);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-}
-.logo-text span {
-  color: var(--accent); background: none;
-  -webkit-text-fill-color: var(--accent); -webkit-background-clip: unset; background-clip: unset;
-}
-
-nav { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.nav-link {
-  font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text2);
-  text-decoration: none; padding: 6px 14px; border-radius: 20px;
-  border: 1px solid transparent;
-  transition: color 0.2s, border-color 0.2s, background 0.2s;
-}
-.nav-link:hover { color: var(--text); border-color: var(--border2); background: var(--surface); }
-
-.badge {
-  font-family: 'DM Mono', monospace; font-size: 11px; color: var(--accent);
-  border: 1px solid rgba(var(--accent-rgb),0.25);
-  padding: 4px 12px 4px 10px; border-radius: 20px;
-  background: rgba(var(--accent-rgb),0.09);
-  display: flex; align-items: center; gap: 6px; white-space: nowrap;
-}
-.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: onlinePulse 2.4s ease-in-out infinite; box-shadow: 0 0 8px rgba(var(--accent-rgb),0.5); }
-
-/* ── HERO ── */
-.hero {
-  margin-bottom: 64px;
-  animation: fadeDown 0.6s 0.08s var(--ease) both;
-}
-.hero-eyebrow {
-  font-family: 'DM Mono', monospace; font-size: 11px; color: var(--accent);
-  letter-spacing: 3.5px; text-transform: uppercase;
-  display: flex; align-items: center; gap: 10px; margin-bottom: 24px;
-}
-.hero-eyebrow::before { content: ''; width: 28px; height: 1px; background: linear-gradient(90deg, var(--accent), transparent); }
-
-.hero h1 {
-  font-size: clamp(44px, 6vw, 72px); font-weight: 800;
-  line-height: 1.0; letter-spacing: -3px; margin-bottom: 20px;
-  background: linear-gradient(160deg, #ffffff 0%, #d8e8f0 40%, rgba(255,255,255,0.68) 100%);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-}
-.hero h1 em { font-style: normal; color: var(--accent); -webkit-text-fill-color: var(--accent); }
-
-.hero p {
-  font-size: 17px; font-weight: 400; color: var(--text2);
-  line-height: 1.65; max-width: 600px; letter-spacing: -0.1px;
-}
-
-/* ── DOWNLOAD CTA ── */
-.cta-section {
-  margin-bottom: 100px;
-  animation: fadeDown 0.6s 0.16s var(--ease) both;
-}
-
-.dl-card {
-  background: rgba(10,14,22,0.7);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-xl);
-  padding: 40px 48px;
-  position: relative; overflow: hidden;
-  max-width: 700px;
-  backdrop-filter: blur(20px);
-}
-.dl-card::before {
-  content: ''; position: absolute; inset: 0;
-  background: linear-gradient(135deg, rgba(29,185,84,0.05) 0%, transparent 60%);
-  pointer-events: none;
-}
-.dl-card-top {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  margin-bottom: 32px; flex-wrap: wrap; gap: 16px;
-}
-.dl-card-title {
-  font-size: 13px; font-weight: 700; letter-spacing: 0.2px;
-  color: var(--text); margin-bottom: 4px;
-}
-.dl-card-version {
-  font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted);
-  display: flex; align-items: center; gap: 6px;
-}
-.dl-card-version span {
-  background: rgba(var(--accent-rgb),0.10); color: var(--accent);
-  border: 1px solid rgba(var(--accent-rgb),0.22);
-  border-radius: 20px; padding: 2px 8px; font-size: 10px;
-}
-
-.btn-dl-main {
-  display: inline-flex; align-items: center; gap: 10px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hi) 100%);
-  color: #000; font-family: 'Syne', sans-serif; font-weight: 800; font-size: 14px;
-  padding: 14px 28px; border-radius: 999px; border: none; cursor: pointer;
-  text-decoration: none;
-  transition: transform 0.18s var(--ease), box-shadow 0.18s;
-  letter-spacing: 0.3px; position: relative; overflow: hidden;
-  box-shadow: 0 4px 24px rgba(var(--accent-rgb),0.42), inset 0 1px 0 rgba(255,255,255,0.25);
-}
-.btn-dl-main::before {
-  content: ''; position: absolute; inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, transparent 60%);
-  pointer-events: none;
-}
-.btn-dl-main:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 10px 36px rgba(var(--accent-rgb),0.55); }
-.btn-dl-main:active { transform: scale(0.97); }
-.btn-dl-main svg { width: 16px; height: 16px; fill: none; stroke: #000; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; animation: downloadBounce 1.6s ease-in-out infinite; }
-
-.dl-meta {
-  display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
-  padding-top: 24px;
-  border-top: 1px solid var(--border);
-}
-.dl-meta-item {
-  display: flex; align-items: center; gap: 7px;
-  font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted);
-}
-.dl-meta-item svg { width: 14px; height: 14px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; flex-shrink: 0; opacity: 0.8; }
-
-.req-note {
-  margin-top: 16px;
-  font-family: 'DM Mono', monospace; font-size: 10.5px; color: var(--muted);
-  line-height: 1.6;
-}
-.req-note strong { color: var(--text2); font-weight: 400; }
-
-/* ── STEPS ── */
-.steps-section {
-  margin-bottom: 100px;
-  animation: fadeDown 0.6s 0.24s var(--ease) both;
-}
-
-.section-label {
-  font-family: 'DM Mono', monospace; font-size: 10px; color: var(--muted);
-  letter-spacing: 3px; text-transform: uppercase; margin-bottom: 36px;
-  display: flex; align-items: center; gap: 12px;
-}
-.section-label::after { content: ''; flex: 1; max-width: 200px; height: 1px; background: linear-gradient(90deg, var(--border2), transparent); }
-
-.steps-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
-}
-.step-card {
-  background: rgba(10,14,22,0.6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 28px 24px;
-  position: relative; overflow: hidden;
-  transition: border-color 0.25s, transform 0.25s var(--ease);
-}
-.step-card::before {
-  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
-  background: linear-gradient(to bottom, var(--accent), transparent);
-  opacity: 0; transition: opacity 0.25s;
-}
-.step-card:hover { border-color: var(--border2); transform: translateY(-3px); }
-.step-card:hover::before { opacity: 1; }
-
-.step-num-badge {
-  font-family: 'DM Mono', monospace; font-size: 10px; color: var(--accent);
-  background: rgba(var(--accent-rgb),0.10); border: 1px solid rgba(var(--accent-rgb),0.22);
-  border-radius: 20px; padding: 3px 10px; display: inline-block; margin-bottom: 18px;
-}
-.step-icon {
-  width: 36px; height: 36px; border-radius: 10px;
-  background: rgba(var(--accent-rgb),0.08); border: 1px solid rgba(var(--accent-rgb),0.15);
-  display: flex; align-items: center; justify-content: center; margin-bottom: 16px;
-}
-.step-icon svg { width: 17px; height: 17px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.step-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 8px; letter-spacing: -0.2px; }
-.step-desc { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text2); line-height: 1.65; }
-
-/* ── FEATURES ── */
-.features-section {
-  margin-bottom: 100px;
-  animation: fadeDown 0.6s 0.32s var(--ease) both;
-}
-.features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
-.feature-row {
-  display: flex; align-items: flex-start; gap: 16px; padding: 20px 24px;
-  background: rgba(10,14,22,0.5);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  transition: border-color 0.22s, background 0.22s;
-}
-.feature-row:hover { border-color: var(--border2); background: rgba(10,14,22,0.75); }
-.feature-icon {
-  width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px;
-  background: rgba(var(--accent-rgb),0.08); border: 1px solid rgba(var(--accent-rgb),0.14);
-  display: flex; align-items: center; justify-content: center; margin-top: 1px;
-}
-.feature-icon svg { width: 15px; height: 15px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.feature-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-.feature-desc { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text2); line-height: 1.6; }
-
-/* ── REQUIREMENTS ── */
-.req-section {
-  margin-bottom: 100px;
-  animation: fadeDown 0.6s 0.38s var(--ease) both;
-}
-.req-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-.req-card {
-  padding: 20px 22px; border: 1px solid var(--border);
-  border-radius: var(--radius); background: rgba(10,14,22,0.5);
-}
-.req-card-label { font-family: 'DM Mono', monospace; font-size: 9.5px; color: var(--accent); letter-spacing: 2.5px; text-transform: uppercase; margin-bottom: 10px; }
-.req-card-value { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-.req-card-note { font-family: 'DM Mono', monospace; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
-
-/* ── FOOTER ── */
-footer {
-  border-top: 1px solid var(--border);
-  padding-top: 40px;
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;
-}
-.footer-logo { display: flex; align-items: center; gap: 10px; }
-.footer-logo-mark {
-  width: 28px; height: 28px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hi) 100%);
-  border-radius: 50%; display: flex; align-items: center; justify-content: center;
-}
-.footer-logo-mark svg { width: 12px; height: 12px; fill: #000; }
-.footer-logo-text { font-size: 15px; font-weight: 800; letter-spacing: -0.5px; color: var(--text); }
-.footer-logo-text span { color: var(--accent); }
-
-.footer-note { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--muted); line-height: 1.6; }
-.footer-links { display: flex; align-items: center; gap: 20px; }
-.footer-links a { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); text-decoration: none; transition: color 0.2s; }
-.footer-links a:hover { color: var(--accent); }
-
-/* ── ANIMATIONS ── */
-@keyframes fadeDown { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes onlinePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb),0.4); } 50% { box-shadow: 0 0 0 5px rgba(var(--accent-rgb),0); } }
-@keyframes logoRing { 0%,100% { transform: scale(1); opacity: 0.5; } 50% { transform: scale(1.28); opacity: 0; } }
-@keyframes downloadBounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(2.5px); } }
-
-/* ── SCROLLBAR ── */
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb),0.25); border-radius: 3px; }
-::selection { background: rgba(var(--accent-rgb),0.25); color: #fff; }
-
-/* ── RESPONSIVE ── */
-@media (max-width: 900px) { .page { padding: 40px 32px 80px; } header { margin-bottom: 72px; } }
-@media (max-width: 640px) {
-  .page { padding: 32px 18px 60px; }
-  .hero h1 { letter-spacing: -1.8px; }
-  .dl-card { padding: 28px 24px; }
-  nav { display: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-}
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<!-- Full-viewport background — color driven by album art -->
 <div id="bg-aurora"></div>
 <div id="bg-aurora-2"></div>
 
+<!-- Glass atmosphere panel -->
 <div class="glass-shell">
 <div class="page">
 
-  <!-- HEADER -->
   <header>
     <div class="logo-mark">
       <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
     </div>
     <span class="logo-text">Fetch</span>
-    <nav>
-      <a href="#how-it-works" class="nav-link">How it works</a>
-      <a href="#features" class="nav-link">Features</a>
-      <a href="#requirements" class="nav-link">Requirements</a>
-    </nav>
-    <div class="badge">
-      <span class="badge-dot"></span>
-      Windows · Free
-    </div>
+    <span class="badge"><span class="server-dot" id="sdot"></span><span id="sstatus">checking…</span></span>
   </header>
 
-  <!-- HERO -->
   <div class="hero">
-    <div class="hero-eyebrow">Personal Project · v3.0.0</div>
     <h1>Download any<br>song from <em>Spotify</em></h1>
-    <p>Drop a Spotify link, get a high-quality MP3 — straight to your PC. No sign-up, no account needed. Paste, click, done.</p>
+    <p>Drop any Spotify link and get the song as a high-quality MP3 — straight to your device.<br>
+       No sign-up. No limits. Just paste, click, done.</p>
   </div>
 
-  <!-- DOWNLOAD CTA -->
-  <div class="cta-section">
-    <div class="dl-card">
-      <div class="dl-card-top">
-        <div>
-          <div class="dl-card-title">Fetch for Windows</div>
-          <div class="dl-card-version">
-            Installer · 64-bit
-            <span>v3.0.0</span>
-          </div>
-        </div>
-        <a class="btn-dl-main" href="https://huggingface.co/dhruvgarhwalpersonal/fetch/resolve/main/fetch.exe" download="Fetch v3.0.exe">
-          <svg viewBox="0 0 24 24"><path d="M12 4v12"/><path d="M8 13l4 4 4-4"/><path d="M5 19h14"/></svg>
-          Download .exe
+  <div class="input-wrap">
+    <div class="input-row" id="input-row">
+      <input type="text" id="spotify-input" placeholder="https://open.spotify.com/track/…" autocomplete="off" spellcheck="false"/>
+      <button class="btn-go" id="go-btn" onclick="startDownload()">Download</button>
+    </div>
+    <div class="steps" id="steps-row">
+      <div class="step" id="s1"><span class="step-num">1</span> Metadata</div>
+      <span class="step-arrow">→</span>
+      <div class="step" id="s2"><span class="step-num">2</span> Cover</div>
+      <span class="step-arrow">→</span>
+      <div class="step" id="s3"><span class="step-num">3</span> Match</div>
+      <span class="step-arrow">→</span>
+      <div class="step" id="s4"><span class="step-num">4</span> Save MP3</div>
+    </div>
+  </div>
+
+  <div id="progress-area">
+    <div class="progress-bar-track"><div class="progress-bar-fill" id="prog-bar"></div></div>
+    <div class="progress-log"><div class="pulse-dot"></div><span id="prog-text">Starting…</span></div>
+  </div>
+
+  <div id="error-area"></div>
+
+  <div id="result-card">
+    <div class="card-glow" id="card-glow"></div>
+    <div class="card-inner">
+      <div class="cover-wrap">
+        <img id="cover-img" src="" alt="cover" crossorigin="anonymous"/>
+        <div class="cover-overlay"></div>
+      </div>
+      <div class="track-info">
+        <div class="track-label">downloaded</div>
+        <div class="track-name" id="track-name">—</div>
+        <div class="track-artist" id="track-artist">—</div>
+        <a class="btn-download" id="dl-link" href="#">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 4v12"/>
+            <path d="M8 13l4 4 4-4"/>
+            <path d="M5 19h14"/>
+          </svg>
+          Save MP3
         </a>
       </div>
-
-      <div class="dl-meta">
-        <div class="dl-meta-item">
-          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>
-          Windows 10 / 11
-        </div>
-        <div class="dl-meta-item">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
-          ~2 min first-run setup
-        </div>
-        <div class="dl-meta-item">
-          <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          No account required
-        </div>
-        <div class="dl-meta-item">
-          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-          Free forever
-        </div>
-      </div>
-
-      <div class="req-note">
-        On first launch, Fetch runs a one-time setup that takes about 2 minutes. After that, it opens instantly every time.
-      </div>
     </div>
   </div>
 
-  <!-- HOW IT WORKS -->
-  <div class="steps-section" id="how-it-works">
-    <div class="section-label">How it works</div>
-    <div class="steps-grid">
-      <div class="step-card">
-        <div class="step-num-badge">step 01</div>
-        <div class="step-icon">
-          <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-        </div>
-        <div class="step-title">Paste a Spotify link</div>
-        <div class="step-desc">Open any track on Spotify, copy its link, and paste it into Fetch. Works with any Spotify track link.</div>
-      </div>
-      <div class="step-card">
-        <div class="step-num-badge">step 02</div>
-        <div class="step-icon">
-          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-        </div>
-        <div class="step-title">Track info is loaded</div>
-        <div class="step-desc">Fetch automatically reads the song title, artist, album and cover art — no account or login needed.</div>
-      </div>
-      <div class="step-card">
-        <div class="step-num-badge">step 03</div>
-        <div class="step-icon">
-          <svg viewBox="0 0 24 24"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 0 0 1.46 6.42 29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
-        </div>
-        <div class="step-title">Best match found</div>
-        <div class="step-desc">Fetch finds the best available audio for your track entirely on its own — no input required.</div>
-      </div>
-      <div class="step-card">
-        <div class="step-num-badge">step 04</div>
-        <div class="step-icon">
-          <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-        </div>
-        <div class="step-title">Saved to your device</div>
-        <div class="step-desc">Your song lands as a high-quality MP3 with the cover art and song details already embedded.</div>
-      </div>
-    </div>
+  <div id="history-section">
+    <div class="history-title">recent downloads</div>
+    <div id="history-list"></div>
   </div>
 
-  <!-- FEATURES -->
-  <div class="features-section" id="features">
-    <div class="section-label">Features</div>
-    <div class="features-grid">
-      <div class="feature-row">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        </div>
-        <div>
-          <div class="feature-title">No account needed</div>
-          <div class="feature-desc">Works entirely without any account or login. Just install and go — zero friction.</div>
-        </div>
-      </div>
-      <div class="feature-row">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-        </div>
-        <div>
-          <div class="feature-title">High-quality MP3</div>
-          <div class="feature-desc">Every download is a high-quality MP3 with album art and song details already inside the file.</div>
-        </div>
-      </div>
-      <div class="feature-row">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-        </div>
-        <div>
-          <div class="feature-title">Download history</div>
-          <div class="feature-desc">Keeps your last 10 songs with cover art in a clean history panel, right inside the app.</div>
-        </div>
-      </div>
-      <div class="feature-row">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
-        </div>
-        <div>
-          <div class="feature-title">Auto first-run setup</div>
-          <div class="feature-desc">Everything sets itself up the first time you launch. Nothing to install or configure manually.</div>
-        </div>
-      </div>
-      <div class="feature-row">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-        </div>
-        <div>
-          <div class="feature-title">Dynamic theming</div>
-          <div class="feature-desc">The app extracts your track's album color and applies it as a live atmospheric background.</div>
-        </div>
-      </div>
-      <div class="feature-row">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        </div>
-        <div>
-          <div class="feature-title">Lightweight & fast</div>
-          <div class="feature-desc">Fetch is small, fast and light. It won't slow down your PC or hog your memory.</div>
-        </div>
-      </div>
-    </div>
-  </div>
+</div><!-- .page -->
+</div><!-- .glass-shell -->
 
-  <!-- REQUIREMENTS -->
-  <div class="req-section" id="requirements">
-    <div class="section-label">System requirements</div>
-    <div class="req-grid">
-      <div class="req-card">
-        <div class="req-card-label">OS</div>
-        <div class="req-card-value">Windows 10 / 11</div>
-        <div class="req-card-note">64-bit only. Windows 7/8 not supported.</div>
-      </div>
-      <div class="req-card">
-        <div class="req-card-label">First-run</div>
-        <div class="req-card-value">~2 min setup</div>
-        <div class="req-card-note">Happens automatically on first launch. Nothing to do.</div>
-      </div>
-      <div class="req-card">
-        <div class="req-card-label">Audio quality</div>
-        <div class="req-card-value">High quality MP3</div>
-        <div class="req-card-note">Best available audio, with full song info embedded.</div>
-      </div>
-      <div class="req-card">
-        <div class="req-card-label">Storage</div>
-        <div class="req-card-value">~150 MB</div>
-        <div class="req-card-note">App install. Plus ~10 MB per downloaded song.</div>
-      </div>
-      <div class="req-card">
-        <div class="req-card-label">Memory</div>
-        <div class="req-card-value">4 GB RAM min</div>
-        <div class="req-card-note">Runs fine on low-end and older hardware.</div>
-      </div>
-      <div class="req-card">
-        <div class="req-card-label">Internet</div>
-        <div class="req-card-value">Required</div>
-        <div class="req-card-note">Needed to find and download your songs.</div>
-      </div>
-    </div>
-  </div>
+<script>
+const SERVER = '';
+const $      = id => document.getElementById(id);
+const wait   = ms => new Promise(r => setTimeout(r, ms));
 
-  <!-- FOOTER -->
-  <footer>
-    <div class="footer-logo">
-      <div class="footer-logo-mark">
-        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+let dlHistory = [];
+try { dlHistory = JSON.parse(localStorage.getItem('fetch_h') || '[]'); } catch(e) {}
+
+// ── Dynamic accent color from album art ──────────────────────────────────────
+function extractColor(imgEl, callback) {
+  try {
+    const canvas = document.createElement('canvas');
+    // Use larger sample for better color accuracy
+    const SIZE = 50;
+    canvas.width = canvas.height = SIZE;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(imgEl, 0, 0, SIZE, SIZE);
+    const d = ctx.getImageData(0, 0, SIZE, SIZE).data;
+
+    // Build color buckets — quantize into 8x8x8 = 512 buckets
+    const buckets = {};
+    for (let i = 0; i < d.length; i += 4) {
+      const alpha = d[i+3];
+      if (alpha < 128) continue; // skip transparent
+
+      const r = d[i], g = d[i+1], b = d[i+2];
+      const lum = r * 0.299 + g * 0.587 + b * 0.114;
+
+      // Skip near-black and near-white
+      if (lum < 18 || lum > 238) continue;
+
+      // Compute saturation
+      const max = Math.max(r,g,b), min = Math.min(r,g,b);
+      const sat = max === 0 ? 0 : (max - min) / max;
+      // Require some saturation — skip grays
+      if (sat < 0.12) continue;
+
+      // Quantize to reduce noise — bin into 32-step buckets
+      const br = Math.round(r / 32) * 32;
+      const bg = Math.round(g / 32) * 32;
+      const bb = Math.round(b / 32) * 32;
+      const key = `${br},${bg},${bb}`;
+
+      if (!buckets[key]) buckets[key] = { r: 0, g: 0, b: 0, count: 0, sat: 0 };
+      buckets[key].r += r;
+      buckets[key].g += g;
+      buckets[key].b += b;
+      buckets[key].count++;
+      buckets[key].sat += sat;
+    }
+
+    const entries = Object.values(buckets);
+    if (entries.length === 0) return callback(29, 185, 84); // default green
+
+    // Score each bucket: frequency × saturation (prefer vivid colors)
+    let best = null, bestScore = -1;
+    for (const e of entries) {
+      const avgSat = e.sat / e.count;
+      const score = e.count * (0.4 + avgSat * 2.0); // weight saturation heavily
+      if (score > bestScore) {
+        bestScore = score;
+        best = e;
+      }
+    }
+
+    let r = Math.round(best.r / best.count);
+    let g = Math.round(best.g / best.count);
+    let b = Math.round(best.b / best.count);
+
+    // Boost vibrancy: push toward the dominant channel
+    const max = Math.max(r, g, b);
+    if (max < 100) {
+      // Dark color — brighten it
+      const factor = 160 / max;
+      r = Math.min(255, Math.round(r * factor));
+      g = Math.min(255, Math.round(g * factor));
+      b = Math.min(255, Math.round(b * factor));
+    }
+
+    callback(r, g, b);
+  } catch(e) {
+    callback(29, 185, 84); // fallback
+  }
+}
+
+function applyAccentColor(r, g, b) {
+  const hex = '#' + [r,g,b].map(v => v.toString(16).padStart(2,'0')).join('');
+  // Lighter variant for hi
+  const rh = Math.min(255, Math.round(r + (255-r)*0.22));
+  const gh = Math.min(255, Math.round(g + (255-g)*0.22));
+  const bh = Math.min(255, Math.round(b + (255-b)*0.22));
+  const hexHi = '#' + [rh,gh,bh].map(v => v.toString(16).padStart(2,'0')).join('');
+
+  // Batch all CSS variable updates at once — no lag
+  const root = document.documentElement;
+  root.style.setProperty('--accent',      hex);
+  root.style.setProperty('--accent-hi',   hexHi);
+  root.style.setProperty('--accent-rgb',  `${r},${g},${b}`);
+  root.style.setProperty('--accent-dim',  `rgba(${r},${g},${b},0.10)`);
+  root.style.setProperty('--accent-glow', `rgba(${r},${g},${b},0.20)`);
+  root.style.setProperty('--accent-soft', `rgba(${r},${g},${b},0.06)`);
+
+  // ── Full-page background: blurred solid fill (not aurora glows) ───────────
+  const aurora = $('bg-aurora');
+  if (aurora) {
+    // Use a single blurred solid color covering the entire viewport
+    aurora.style.background = `rgba(${r},${g},${b},1)`;
+    aurora.style.opacity = '1';
+  }
+  // aurora-2 unused now, keep hidden
+  const aurora2 = $('bg-aurora-2');
+  if (aurora2) aurora2.style.opacity = '0';
+
+  // ── Card glow — subtle, just below the card ────────────────────────────────
+  const glow = $('card-glow');
+  if (glow) {
+    glow.style.background = `radial-gradient(ellipse 80% 60% at 50% 110%, rgba(${r},${g},${b},0.50) 0%, transparent 70%)`;
+    glow.style.opacity = '1';
+  }
+
+  // ── Result card border glow — light, not heavy ─────────────────────────────
+  const card = $('result-card');
+  if (card) {
+    card.style.boxShadow = `0 32px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(${r},${g},${b},0.18), 0 0 48px rgba(${r},${g},${b},0.14)`;
+  }
+}
+
+// ── Server health check ───────────────────────────────────────────────────────
+async function checkServer() {
+  try {
+    const r = await fetch(SERVER + '/api/ping', { signal: AbortSignal.timeout(2500) });
+    if (r.ok) {
+      $('sdot').className = 'server-dot online';
+      try {
+        const cr = await fetch(SERVER + '/api/cookie-status', { signal: AbortSignal.timeout(2500) });
+        if (cr.ok) {
+          const cd = await cr.json();
+          $('sstatus').textContent = cd.ok
+            ? `online · cookies: ${cd.browser || 'file'}`
+            : 'online · ⚙️ no cookies';
+          if (!cd.ok) $('sdot').className = 'server-dot';
+        } else {
+          $('sstatus').textContent = 'server online';
+        }
+      } catch(e) { $('sstatus').textContent = 'server online'; }
+      return true;
+    }
+  } catch(e) {}
+  $('sdot').className = 'server-dot';
+  $('sstatus').textContent = 'server offline';
+  return false;
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+const setProgress = (pct, txt) => {
+  $('prog-bar').style.width  = pct + '%';
+  $('prog-text').textContent = txt;
+};
+
+function showProgress(on) {
+  $('progress-area').style.display = on ? 'block' : 'none';
+}
+function showError(msg) {
+  const el = $('error-area');
+  el.textContent = msg; el.style.display = 'block';
+}
+function hideError() {
+  $('error-area').style.display = 'none';
+}
+
+function setStep(n) {
+  ['s1','s2','s3','s4'].forEach((id, i) => {
+    const el = $(id);
+    el.className = 'step' + (i+1 < n ? ' done' : i+1 === n ? ' active' : '');
+  });
+}
+
+function lockInput(locked) {
+  const inp = $('spotify-input');
+  const btn = $('go-btn');
+  inp.disabled = locked;
+  btn.disabled = locked;
+  const row = $('input-row');
+  if (locked) {
+    inp.style.opacity = '0.65';
+    inp.style.cursor  = 'not-allowed';
+    row && row.classList.add('downloading');
+  } else {
+    inp.style.opacity = '1';
+    inp.style.cursor  = 'text';
+    row && row.classList.remove('downloading');
+  }
+}
+
+function extractTrackId(url) {
+  const m = url.match(/spotify\.com\/(?:intl-[a-z]+\/)?track\/([a-zA-Z0-9]+)/);
+  return m ? m[1] : null;
+}
+
+// ── Metadata ─────────────────────────────────────────────────────────────────
+async function fetchMeta(trackId) {
+  const r = await fetch(
+    SERVER + '/api/spotify-meta?' + new URLSearchParams({ id: trackId }),
+    { signal: AbortSignal.timeout(30000) }
+  );
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.error || `Metadata fetch failed (${r.status})`);
+  }
+  const d = await r.json();
+  if (!d.title || !d.artist) throw new Error('Could not extract track metadata from Spotify.');
+  return { track: d.title, artist: d.artist, album: d.album || d.title, cover: d.cover || '' };
+}
+
+// ── YouTube search ────────────────────────────────────────────────────────────
+async function findYouTube(track, artist) {
+  const r = await fetch(
+    SERVER + '/api/youtube-search?' + new URLSearchParams({ title: track, artist }),
+    { signal: AbortSignal.timeout(30000) }
+  );
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.error || `YouTube search failed (${r.status})`);
+  }
+  const d = await r.json();
+  if (!d.youtube_url) throw new Error('No YouTube match found.');
+  return d.youtube_url;
+}
+
+// ── Download via streaming ────────────────────────────────────────────────────
+async function downloadViaServer(ytUrl, meta) {
+  setProgress(60, 'Downloading audio…');
+
+  const resp = await fetch(SERVER + '/api/stream-download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      youtube_url: ytUrl,
+      title:  meta.track,
+      artist: meta.artist,
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error || `Download failed (${resp.status})`);
+  }
+
+  setProgress(85, 'Receiving file…');
+
+  // Read the streamed response as a blob
+  const blob = await resp.blob();
+  const url  = URL.createObjectURL(blob);
+
+  setProgress(100, '✓ Done!');
+  return url;  // returns a blob:// URL the browser can download
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+async function startDownload() {
+  const input = $('spotify-input').value.trim();
+
+  hideError();
+  $('result-card').style.display = 'none';
+  if (!input) { showError('Paste a Spotify track link first.'); return; }
+
+  const trackId = extractTrackId(input);
+  if (!trackId) {
+    showError('Invalid Spotify link. Example: https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT');
+    return;
+  }
+
+  lockInput(true);
+  showProgress(true);
+  setStep(0);
+
+  try {
+    setStep(1);
+    setProgress(5, 'Looking up your track…');
+    const meta = await fetchMeta(trackId);
+    setStep(2);
+    setProgress(22, `Got it — ${meta.track}`);
+
+    $('spotify-input').value = `${meta.track} — ${meta.artist}`;
+
+    $('cover-img').src            = meta.cover || '';
+    $('track-name').textContent   = meta.track;
+    $('track-artist').textContent = meta.artist;
+    $('dl-link').href             = '#';
+    $('dl-link').removeAttribute('download');
+    $('dl-link').style.opacity       = '0.4';
+    $('dl-link').style.pointerEvents = 'none';
+    $('dl-link').innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 4v12"/><path d="M8 13l4 4 4-4"/><path d="M5 19h14"/></svg> Preparing…`;
+
+    if (meta.cover) {
+      $('result-card').style.setProperty('--cover-bg', `url(${meta.cover})`);
+    }
+    $('result-card').style.display = 'block';
+
+    // Load cover image and extract color — works for all covers via proxy
+    const coverImg = $('cover-img');
+    const doExtract = () => {
+      // Try direct extraction first
+      try {
+        extractColor(coverImg, applyAccentColor);
+      } catch(e) {
+        // If CORS fails, load via canvas proxy
+        loadViaProxy(meta.cover);
+      }
+    };
+
+    const loadViaProxy = (url) => {
+      const proxyImg = new Image();
+      proxyImg.crossOrigin = 'anonymous';
+      proxyImg.onload = () => extractColor(proxyImg, applyAccentColor);
+      proxyImg.onerror = () => {}; // silently fail, keep default color
+      proxyImg.src = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+    };
+
+    if (coverImg.complete && coverImg.naturalWidth > 0) {
+      doExtract();
+    } else {
+      coverImg.onload = doExtract;
+      coverImg.onerror = () => {};
+    }
+
+    await wait(200);
+
+    setStep(3);
+    setProgress(30, 'Finding the best version…');
+    const ytUrl = await findYouTube(meta.track, meta.artist);
+    setProgress(50, 'Perfect match found — hang tight…');
+    await wait(150);
+
+    setStep(4);
+    setProgress(55, 'Preparing your file…');
+    await wait(150);
+    const fileUrl = await downloadViaServer(ytUrl, meta);
+
+    setProgress(100, '✓ Done!');
+    await wait(300);
+    showProgress(false);
+    setStep(5);
+
+    $('cover-img').src            = meta.cover;
+    $('track-name').textContent   = meta.track;
+    $('track-artist').textContent = meta.artist;
+    $('dl-link').href             = fileUrl;
+    $('dl-link').download         = `${meta.track} - ${meta.artist}.mp3`;
+    $('dl-link').style.opacity       = '1';
+    $('dl-link').style.pointerEvents = 'auto';
+    $('dl-link').innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 4v12"/><path d="M8 13l4 4 4-4"/><path d="M5 19h14"/></svg> Save MP3`;
+    $('result-card').style.display = 'block';
+
+    const a = document.createElement('a');
+    a.href = fileUrl;
+    a.download = `${meta.track} - ${meta.artist}.mp3`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => document.body.removeChild(a), 500);
+
+    const item = { track: meta.track, artist: meta.artist, cover: meta.cover, url: fileUrl };
+    dlHistory = [item, ...dlHistory.filter(h => h.track !== item.track)].slice(0, 8);
+    try { localStorage.setItem('fetch_h', JSON.stringify(dlHistory)); } catch(e) {}
+    renderHistory();
+
+  } catch(err) {
+    showProgress(false);
+    showError(err.message || 'Something went wrong.');
+    setStep(0);
+    $('spotify-input').value = input;
+  } finally {
+    lockInput(false);
+  }
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+function renderHistory() {
+  const sec = $('history-section'), list = $('history-list');
+  if (!dlHistory.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  list.innerHTML = dlHistory.map(h => `
+    <div class="history-item">
+      <img class="history-cover" src="${h.cover}" alt="" onerror="this.style.opacity=0"/>
+      <div class="history-info">
+        <div class="history-name">${h.track}</div>
+        <div class="history-artist">${h.artist}</div>
       </div>
-      <span class="footer-logo-text">Fetch</span>
-    </div>
-    <div class="footer-note">
-      Personal project. For personal use only — respect copyright laws in your region.
-    </div>
-    <div class="footer-links">
-      <a href="#how-it-works">How it works</a>
-      <a href="#requirements">Requirements</a>
-      <a href="https://github.com" target="_blank">GitHub</a>
-    </div>
-  </footer>
+      <a class="history-dl-btn" href="${h.url}" download="${h.track} - ${h.artist}.mp3" title="Download ${h.track}">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 4v12"/>
+          <path d="M8 13l4 4 4-4"/>
+          <path d="M5 19h14"/>
+        </svg>
+      </a>
+    </div>`).join('');
+}
 
-</div>
-</div>
-
+$('spotify-input').addEventListener('keydown', e => { if (e.key === 'Enter') startDownload(); });
+checkServer();
+setInterval(checkServer, 12000);
+renderHistory();
+</script>
 </body>
 </html>
