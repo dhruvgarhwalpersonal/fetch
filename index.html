@@ -218,18 +218,7 @@ async function checkServer() {
     const r = await fetch(SERVER + '/api/ping', { signal: AbortSignal.timeout(2500) });
     if (r.ok) {
       $('sdot').className = 'server-dot online';
-      try {
-        const cr = await fetch(SERVER + '/api/cookie-status', { signal: AbortSignal.timeout(2500) });
-        if (cr.ok) {
-          const cd = await cr.json();
-          $('sstatus').textContent = cd.ok
-            ? `online · cookies: ${cd.browser || 'file'}`
-            : 'online · ⚙️ no cookies';
-          if (!cd.ok) $('sdot').className = 'server-dot';
-        } else {
-          $('sstatus').textContent = 'server online';
-        }
-      } catch(e) { $('sstatus').textContent = 'server online'; }
+      $('sstatus').textContent = 'server online';
       return true;
     }
   } catch(e) {}

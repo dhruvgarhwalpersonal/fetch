@@ -33,10 +33,12 @@ except ImportError:
     MUTAGEN_OK = False
     print("WARNING: mutagen not installed.  Run: pip install mutagen")
 
-app = Flask(__name__, static_folder='.')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__, static_folder=BASE_DIR)
 CORS(app)
 
-DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), 'downloads')
+DOWNLOAD_DIR = os.path.join(BASE_DIR, 'downloads')
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 jobs: dict = {}
@@ -48,52 +50,6 @@ HEADERS = {
         'Chrome/124.0.0.0 Safari/537.36'
     ),
 }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cookie helpers for YouTube bot-detection bypass
-# ─────────────────────────────────────────────────────────────────────────────
-
-COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
-_BROWSERS    = ['chrome', 'chromium', 'brave', 'edge', 'firefox', 'opera', 'vivaldi', 'safari']
-_cookie_cache: dict = {}   # {'browser': 'chrome'} or {}
-
-
-def _best_cookie_source() -> dict:
-    """
-    Returns a yt-dlp options fragment for cookie auth.
-    Priority: cookies.txt file > cached browser > browser probe > nothing.
-    """
-    if os.path.exists(COOKIES_FILE):
-        print(f"[cookies] Using cookies.txt")
-        return {'cookiefile': COOKIES_FILE}
-
-    cached = _cookie_cache.get('browser')
-    if cached:
-        return {'cookiesfrombrowser': (cached,)}
-
-    print("[cookies] Probing installed browsers for YouTube cookies …")
-    probe_url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
-    for browser in _BROWSERS:
-        try:
-            with yt_dlp.YoutubeDL({
-                'quiet': True, 'no_warnings': True,
-                'skip_download': True, 'simulate': True,
-                'cookiesfrombrowser': (browser,),
-            }) as ydl:
-                ydl.extract_info(probe_url, download=False)
-            print(f"[cookies] ✓ {browser} cookies work")
-            _cookie_cache['browser'] = browser
-            return {'cookiesfrombrowser': (browser,)}
-        except Exception as exc:
-            msg = str(exc).lower()
-            if any(kw in msg for kw in ('sign in', 'bot', 'cookies')):
-                print(f"[cookies] {browser}: auth failed")
-            else:
-                print(f"[cookies] {browser}: not available")
-
-    print("[cookies] No working browser cookies found — proceeding without")
-    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,7 +320,6 @@ def _search_youtube(title: str, artist: str) -> str:
         'quiet': True, 'no_warnings': True,
         'skip_download': True, 'extract_flat': True, 'noplaylist': True,
     }
-    opts.update(_best_cookie_source())
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -488,7 +443,6 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
         'extractor_retries': 3,
         'http_chunk_size': 10485760,
     }
-    ydl_opts.update(_best_cookie_source())
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -513,11 +467,9 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
     except Exception as exc:
         err = str(exc)
         if any(kw in err.lower() for kw in ('sign in', 'bot', 'confirm')):
-            _cookie_cache.clear()
             err = (
                 'YouTube blocked the download (bot detection). '
-                'Fix: place a cookies.txt next to server.py. '
-                'Export it from your browser with the "Get cookies.txt LOCALLY" extension.'
+                'Please try again in a moment or try a different track.'
             )
         import traceback; traceback.print_exc()
         jobs[job_id].update({'status': 'error', 'error': err})
@@ -529,7 +481,7 @@ def run_download(job_id: str, youtube_url: str, title: str, artist: str, album: 
 
 @app.route('/')
 def index():
-    return send_from_directory('.', 'index.html')
+    return send_from_directory(BASE_DIR, 'index.html')
 
 
 @app.route('/favicon.ico')
@@ -547,23 +499,12 @@ def favicon():
 
 @app.route('/style.css')
 def stylesheet():
-    return send_from_directory('.', 'style.css')
+    return send_from_directory(BASE_DIR, 'style.css')
 
 
 @app.route('/api/ping')
 def ping():
     return jsonify({'ok': True})
-
-
-@app.route('/api/cookie-status')
-def cookie_status():
-    if os.path.exists(COOKIES_FILE):
-        return jsonify({'source': 'file', 'ok': True, 'browser': 'file'})
-    cached = _cookie_cache.get('browser')
-    if cached:
-        return jsonify({'source': 'browser', 'browser': cached, 'ok': True})
-    return jsonify({'source': 'none', 'ok': False,
-                    'hint': 'Drop a cookies.txt next to server.py to bypass YouTube bot errors.'})
 
 
 @app.route('/api/spotify-meta')
